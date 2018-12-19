@@ -4,6 +4,9 @@ __lua__
 
 --[[
 render layers:
+  9: ...
+  ~black out everything outside of the view pane~
+  10: ...
 ]]
 
 -- useful no-op function
@@ -31,27 +34,71 @@ local button_presses
 local entities
 local entity_classes = {
   player = {
+    init = function(self)
+      self.pane = spawn_entity('snowball_pane', ternary(self.is_first_player, 31, 95), 103, {
+        player = self
+      })
+      self.score = spawn_entity('score', ternary(self.is_first_player, 31, 95), 20, {
+        player = self
+      })
+    end,
     draw = function(self, x, y)
+      -- colorize
+      pal(3, ternary(self.is_first_player, 1, 2))
+      pal(11, ternary(self.is_first_player, 12, 8))
       -- draw player sprite
       local sprite = flr(self.frames_alive / 20) % 15 + 1
-      pal(3, ternary(self.player_num == 1, 1, 2))
-      pal(11, ternary(self.player_num == 1, 12, 8))
       if sprite == 14 then
-        sspr2(102, 18, 19, 16, x + ternary(self.player_num == 1, 1, -3), y + 1, self.player_num == 2)
+        sspr2(102, 18, 19, 16, x - ternary(self.is_first_player, 7, 11), y + 1, not self.is_first_player)
       elseif sprite == 15 then
-        sspr2(36, 72, 14, 20, x + ternary(self.player_num == 1, 1, 2), y - 3, self.player_num == 2)
+        sspr2(36, 72, 14, 20, x - ternary(self.is_first_player, 7, 6), y - 3, not self.is_first_player)
       else
-        sspr2(17 * ((sprite - 1) % 7), 18 * flr((sprite - 1) / 7), 17, 18, x, y, self.player_num == 2)
+        sspr2(17 * ((sprite - 1) % 7), 18 * flr((sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
+      end
+    end
+  },
+  snowball_pane = {
+    render_layer = 10,
+    draw = function(self, x, y)
+      local is_first = self.player.is_first_player
+      pal(4, 0)
+      pal(11, ternary(is_first, 12, 8))
+      sspr2(18, 92, 46, 36, x - ternary(is_first, 24, 21), y - 19, not is_first)
+    end
+  },
+  score = {
+    wins = 0,
+    render_layer = 10,
+    draw = function(self, x, y)
+      pal(11, 12)
+      local i
+      for i = 1, 3 do
+        if self.wins >= ternary(self.player.is_first_player, i, 4 - i) then
+          pal(11, ternary(self.player.is_first_player, 12, 8))
+        else
+          pal(11, ternary(self.player.is_first_player, 1, 2))
+        end
+        sspr2(50, 72, 3, 20, x - 13 + 6 * i, y - 10)
       end
     end
   },
   snowfall = {
+    min_dist = 0.00,
+    max_dist = 0.85,
+    spawn_rate = 1.00,
     init = function(self)
       self.snowflakes = {}
+      -- get some now on the screen immediately
+      local i
+      for i = 1, 200 do
+        self:update()
+      end
     end,
     update = function(self)
       -- add new snowflakes
-      self:spawn_snowflake()
+      if rnd() < self.spawn_rate then
+        self:spawn_snowflake()
+      end
       -- update all snowflakes
       local i
       for i = 1, #self.snowflakes do
@@ -72,11 +119,11 @@ local entity_classes = {
       end
     end,
     spawn_snowflake = function(self)
-      local distance_from_camera = rnd_num(0.0, 0.85)
+      local distance_from_camera = rnd_num(self.min_dist, self.max_dist)
       local sprite = 1
-      if distance_from_camera < 0.5 and rnd() < 0.1 then
+      if distance_from_camera < 0.4 and rnd() < 0.07 then
         sprite = 2
-      elseif distance_from_camera < 0.2 and rnd() < 0.15 then
+      elseif distance_from_camera < 0.3 and rnd() < 0.07 then
         sprite = 3
       end
       add(self.snowflakes, {
@@ -97,10 +144,29 @@ function _init()
   buttons = { {}, {} }
   button_presses = { {}, {} }
   entities = {}
-  -- spawn initial entities
-  spawn_entity("player", 12, 65, { player_num = 1 })
-  spawn_entity("player", 98, 65, { player_num = 2 })
-  spawn_entity("snowfall", 0, 0)
+  -- spawn players
+  spawn_entity("player", 20, 65, {
+    player_num = 1,
+    is_first_player = true
+  })
+  spawn_entity("player", 106, 65, {
+    player_num = 2,
+    is_first_player = false
+  })
+  -- foreground snowfall
+  spawn_entity("snowfall", 0, 0, {
+    min_dist = 0.0,
+    max_dist = 0.4,
+    spawn_rate = 0.2,
+    render_layer = 9
+  })
+  -- background snowfall
+  spawn_entity("snowfall", 0, 0, {
+    min_dist = 0.4,
+    max_dist = 0.8,
+    spawn_rate = 0.3,
+    render_layer = 1
+  })
 end
 
 function _update()
@@ -148,41 +214,42 @@ function _draw()
   end
   camera(screen_offet_x)
   -- clear the screen
+  pal()
   cls(bg_color)
   -- draw the background
   pal(4, 0)
-  sspr2(64, 71, 64, 57, 0, 32)
-  sspr2(64, 71, 64, 57, 63, 32, true)
-  -- draw background trees
-  sspr2(9, 92, 9, 9, 32, 69) -- left
-  sspr2(53, 69, 11, 23, 0, 53) -- far left
-  sspr2(2, 101, 16, 27, 111, 49) -- far right
-  -- draw snowball panes
-  pal(11, 12)
-  sspr2(18, 92, 46, 36, 7, 84)
-  pal(11, 8)
-  sspr2(18, 92, 46, 36, 74, 84, true)
-  -- draw score tally marks
-  pal(11, 12)
-  sspr2(50, 72, 3, 20, 24, 10)
-  sspr2(50, 72, 3, 20, 30, 10)
-  pal(11, 1)
-  sspr2(50, 72, 3, 20, 36, 10)
-  pal(11, 8)
-  sspr2(50, 72, 3, 20, 100, 10)
-  pal(11, 2)
-  sspr2(50, 72, 3, 20, 94, 10)
-  sspr2(50, 72, 3, 20, 88, 10)
-  -- draw each entity
+  sspr2(64, 71, 64, 57, 0, 32) -- snow drifts
+  sspr2(64, 71, 64, 57, 63, 32, true) -- snow drifts
+  sspr2(9, 92, 9, 9, 32, 69) -- distant left tree
+  sspr2(53, 69, 11, 23, 0, 53) -- far left tree
+  sspr2(2, 101, 16, 27, 111, 49) -- far right tre
+  -- draw each entity that's within the main view area
   local entity
   for entity in all(entities) do
-    if entity.is_visible and entity.frames_alive >= entity.hidden_frames then
-      entity:draw(entity.x, entity.y)
+    if entity.render_layer < 10 and entity.is_visible and entity.frames_alive >= entity.hidden_frames then
       pal()
-      fillp()
+      entity:draw(entity.x, entity.y)
+    end
+  end
+  -- black out everything outside of the main view area
+  pal()
+  palt(6, true)
+  palt(7, true)
+  palt(13, true)
+  pal(4, 0)
+  sspr2(64, 71, 64, 57, 0, 32) -- snow drifts
+  sspr2(64, 71, 64, 57, 63, 32, true) -- snow drifts
+  rectfill2(0, 0, 127, 32, 0)
+  rectfill2(0, 89, 127, 39)
+  -- draw each entity that's outside of the main view area
+  for entity in all(entities) do
+    if entity.render_layer >= 10 and entity.is_visible and entity.frames_alive >= entity.hidden_frames then
+      pal()
+      entity:draw(entity.x, entity.y)
     end
   end
   -- cover up the rightmost column of pixels
+  pal()
   line(127, 0, 127, 127, 0)
 end
 
