@@ -20,6 +20,18 @@ end
 -- constants
 local controllers = { 1, 0 }
 local bg_color = 0
+local player_animations = {
+  stand = { 1 },
+  pause = { { -1, 10 } },
+  bow = { { 2, 10 }, { 3, 30 }, { 2, 10 }, 1 },
+  drop = { { 4, 9 }, { 5, 8 } },
+  pack_snow = { { 5, 14 }, { 6, 14 } },
+  show_snowball = { { 7, 8 }, { 15, 30 } },
+  aim = { { 8, 12 }, 9 },
+  throw = { { 10, 3 }, 14 },
+  dodge = { { 11, 20 } },
+  block = { { 12, 30 }, { 13, 20 } }
+}
 
 -- effect vars
 local game_frames
@@ -34,26 +46,95 @@ local button_presses
 local entities
 local entity_classes = {
   player = {
+    sprite = 1,
+    animation_queue = nil,
+    animation_frames = -1,
+    on_animation_done = nil,
     init = function(self)
+      self.animation_queue = {}
       self.pane = spawn_entity('snowball_pane', ternary(self.is_first_player, 31, 95), 103, {
-        player = self
+        player = self,
+        is_visible = false
       })
       self.score = spawn_entity('score', ternary(self.is_first_player, 31, 95), 20, {
-        player = self
+        player = self,
+        is_visible = false
       })
+    end,
+    update = function(self)
+      -- apply animation
+      self:apply_animation()
+      local has_pressed_button = btnp2(4, self.player_num, true) or btnp2(5, self.player_num, true)
+      if has_pressed_button then
+        self:animate({ 'stand', 'pause', 'drop', 'pack_snow', 'pack_snow', 'pack_snow', 'show_snowball', 'aim', 'pause', 'pause', 'block', 'stand', 'pause', 'pause', 'aim', 'pause', 'pause', 'throw' })
+      end
     end,
     draw = function(self, x, y)
       -- colorize
       pal(3, ternary(self.is_first_player, 1, 2))
       pal(11, ternary(self.is_first_player, 12, 8))
       -- draw player sprite
-      local sprite = flr(self.frames_alive / 20) % 15 + 1
-      if sprite == 14 then
+      if self.sprite == 14 then
         sspr2(102, 18, 19, 16, x - ternary(self.is_first_player, 7, 11), y + 1, not self.is_first_player)
-      elseif sprite == 15 then
+      elseif self.sprite == 15 then
         sspr2(36, 72, 14, 20, x - ternary(self.is_first_player, 7, 6), y - 3, not self.is_first_player)
       else
-        sspr2(17 * ((sprite - 1) % 7), 18 * flr((sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
+        sspr2(17 * ((self.sprite - 1) % 7), 18 * flr((self.sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
+      end
+    end,
+    animate = function(self, animation, on_done)
+      if type(animation) == 'string' then
+        self.animation_queue = { animation }
+      else
+        self.animation_queue = animation
+      end
+      self.animation_frames = -1
+      self.on_animation_done = on_done
+      self:apply_animation()
+    end,
+    apply_animation = function(self, on_done)
+      if #self.animation_queue > 0 then
+        -- progress the animation
+        increment_counter_prop(self, 'animation_frames')
+        -- set the player's sprite based on the animation data
+        local animation = self.animation_queue[1]
+        local animation_data = player_animations[animation]
+        local total_frames = 0
+        local i
+        for i = 1, #animation_data do
+          local sprite
+          local frames
+          if type(animation_data[i]) == 'number' then
+            sprite = animation_data[i]
+            frames = 1
+          else
+            sprite = animation_data[i][1]
+            frames = animation_data[i][2] or 1
+          end
+          total_frames += frames
+          if sprite > 0 then
+            self.sprite = sprite
+          end
+          if self.animation_frames < total_frames then
+            return
+          end
+        end
+        -- the animation is finished
+        local remaining_animations = {}
+        for i = 2, #self.animation_queue do
+          add(remaining_animations, self.animation_queue[i])
+        end
+        if #remaining_animations > 0 then
+          self:animate(remaining_animations, self.on_animation_done)
+        else
+          self.animation_queue = {}
+          self.animation_frames = 0
+          if self.on_animation_done then
+            local func = self.on_animation_done
+            self.on_animation_done = nil
+            func()
+          end
+        end
       end
     end
   },
