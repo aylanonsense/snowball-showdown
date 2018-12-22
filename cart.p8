@@ -6,6 +6,8 @@ __lua__
 render layers:
    1: snowfall (background)
    5: player
+   6: snowball
+   7: snow_poof (snowballs)
    9: snowfall (foreground)
   10: game_blinders
   11: score
@@ -30,21 +32,26 @@ end
 local controllers = { 1, 0 }
 local bg_color = 0
 local player_animations = {
-  stand = { 1 },
+  get_up = { { 7, 20 }, 1 },
   pause = { { -1, 10 } },
-  bow_down = { { 2, 10 }, { 3, 30 } },
-  bow_up = { { 3, 1 }, { 2, 10 }, 1 },
-  drop = { { 4, 7 }, { 5, 5 } },
+  bow = { { -1, 25 }, { 2, 10 }, { 3, 30 }, { 2, 10 }, { 1, 25 } },
+  drop = { { -1, 8 }, { 4, 8 }, { 5, 3 } },
   pack_snow = { { 5, 10 }, { 6, 10 } },
-  show_snowball = { { 7, 8 }, { 15, 30 } },
+  show_snowball = { { 7, 9 }, 15 },
+  celebrate = { 17 },
+  stop_celebrating = { { 18, 5 }, 1},
   aim = { { 8, 12 }, 9 },
-  throw = { { 10, 3 }, 14 },
-  dodge = { { 11, 20 } },
-  block = { { 12, 30 }, { 13, 20 } }
+  throw_start = { { 10, 3 } },
+  throw = { 14 },
+  dodge = { { 11, 17 } },
+  block = { 12 },
+  stop_blocking = { { -1, 15 }, { 13, 20 }, { 1, 10 } }
 }
 
 -- debug vars
 local skip_to_start = false
+local skip_to_throw = false
+local starting_points = { 0, 0 }
 
 -- scene vars
 local scene
@@ -71,8 +78,11 @@ local entity_classes = {
     animation_queue = nil,
     animation_frames = -1,
     on_animation_done = nil,
-    has_bowed = false,
-    has_started_packing = false,
+    showoff_frames_left = 0,
+    is_ready_to_throw = false,
+    has_taken_action = false,
+    has_dodged = false,
+    has_been_hit = false,
     init = function(self)
       self.animation_queue = {}
       self.pane = spawn_entity("snowball_pane", ternary(self.is_first_player, 31, 95), 150, {
@@ -81,7 +91,8 @@ local entity_classes = {
       })
       self.score = spawn_entity("score", ternary(self.is_first_player, 31, 95), 20, {
         player = self,
-        is_visible = false
+        is_visible = false,
+        points = starting_points and starting_points[self.player_num] or 0
       })
       self.ready = spawn_entity("ready_up", ternary(self.is_first_player, 21, 107), 83, {
         player = self,
@@ -89,38 +100,50 @@ local entity_classes = {
       })
     end,
     update = function(self)
+      decrement_counter_prop(self, "showoff_frames_left")
       -- apply animation
       self:apply_animation()
       local has_pressed_button = any_button_pressed(self.player_num, true)
       if has_pressed_button then
         if scene == "title" then
           self.ready:activate()
-        elseif scene == "bows" then
-          self:animate("bow_down", function()
-            self.has_bowed = true
-            if self.opponent.has_bowed then
-              bows_done()
+        elseif scene == "game" and not self.has_been_hit then
+          if self.is_ready_to_throw and not self.has_taken_action then
+            self.has_taken_action = true
+            local incoming_snowball = self.opponent.snowball
+            -- dodge snowball
+            if incoming_snowball then
+              local offset = ternary(incoming_snowball.has_updated_this_frame, 0, 1)
+              local frames_alive = incoming_snowball.frames_alive + offset
+              local frames_to_hit = incoming_snowball.frames_to_hit - offset
+              if frames_alive > 1 and frames_to_hit < 6 then
+                self.has_dodged = true
+                spawn_entity("dodge", self.x, self.y - 8, {
+                  player = self
+                })
+                self:animate("dodge", function()
+                  self:throw_snowball()
+                end)
+              end
             end
-          end)
-        elseif scene == "game" then
-          -- start packing a snowball
-          if not self.has_started_packing then
-            self.has_started_packing = true
-            self:animate("drop", function()
-              self:keep_packing_snow()
-              self.pane:show()
-            end)
+            -- throw snowball
+            if not self.has_dodged then
+              self:throw_snowball()
+            end
           -- finish packing a snowball
           elseif not self.pane.is_done then
             if self.pane:activate() then
-              self:animate({ 'show_snowball', 'aim' }, function()
+              if self.opponent.pane.is_done then
+                self.showoff_frames_left = min(max(20, self.opponent.showoff_frames_left + 6), 48)
+              else
+                self.showoff_frames_left = 48
+              end
+              self:animate({ "show_snowball", { -1, self.showoff_frames_left - 9 }, "aim" }, function()
                 self.pane.is_visible = false
+                self.is_ready_to_throw = true
               end)
             end
           end
-        else
-          -- self:animate({ "stand", "pause", "drop", "pack_snow", "pack_snow", "pack_snow", "show_snowball", "aim", "pause", "pause", "block", "stand", "pause", "pause", "aim", "pause", "pause", "throw" })
-          self.pane:activate()
         end
       end
     end,
@@ -129,13 +152,57 @@ local entity_classes = {
       pal(3, self.dark_color)
       pal(11, self.color)
       -- draw player sprite
-      if self.sprite == 14 then
+      if self.sprite >= 16 then
+        pal(7, self.dark_color)
+      end
+      if self.sprite == 18 then
+        self.sprite = 10
+      end
+      if self.sprite == 14 or self.sprite == 16 then
         sspr2(102, 18, 19, 16, x - ternary(self.is_first_player, 7, 11), y + 1, not self.is_first_player)
-      elseif self.sprite == 15 then
+      elseif self.sprite == 15 or self.sprite == 17 then
         sspr2(36, 72, 14, 20, x - ternary(self.is_first_player, 7, 6), y - 3, not self.is_first_player)
       else
         sspr2(17 * ((self.sprite - 1) % 7), 18 * flr((self.sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
       end
+    end,
+    reset = function(self)
+      self.snowball = nil
+      self.showoff_frames_left = 0
+      self.is_ready_to_throw = false
+      self.has_taken_action = false
+      self.has_dodged = false
+      self.has_been_hit = false
+      self.pane:reset()
+    end,
+    throw_snowball = function(self)
+      self:animate("throw_start", function()
+        self.snowball = spawn_entity("snowball", self.x + 11 * self.facing, self.y + 5, {
+          player = self,
+          vx = 5 * self.facing
+        })
+        self:animate("throw")
+      end)
+    end,
+    get_hit = function(self)
+      self.has_been_hit = true
+      self.pane.is_visible = false
+      self:animate("block")
+      spawn_entity("snow_poof", self.x, self.y, {
+        num_snowflakes = 25
+      })
+      local opponent = self.opponent
+      if not self.has_taken_action or opponent.has_been_hit or opponent.has_dodged then
+        end_round()
+      end
+    end,
+    start_packing_snow = function(self)
+      self:animate("drop", function()
+        self.pane:show()
+        self:animate({ { -1, 29 } }, function()
+          self:keep_packing_snow()
+        end)
+      end)
     end,
     keep_packing_snow = function(self)
       self:animate("pack_snow", function()
@@ -156,10 +223,10 @@ local entity_classes = {
       if #self.animation_queue > 0 then
         -- progress the animation
         increment_counter_prop(self, "animation_frames")
-        -- set the player's sprite based on the animation data
+        -- set the sprite based on the animation data
         local animation = self.animation_queue[1]
         local animation_data
-        if type(animation) == 'string' then
+        if type(animation) == "string" then
           animation_data = player_animations[animation]
         else
           animation_data = { animation }
@@ -220,8 +287,12 @@ local entity_classes = {
             self.y = 103
           end
         end
-        -- spin the cursor
+        -- pause before starting
         decrement_counter_prop(self, "wait_frames")
+        if self.wait_frames == 8 then
+          start:show()
+        end
+        -- spin the cursor
         if self.wait_frames <= 0 then
           self.cursor_angle = (self.cursor_angle + 6 * ternary(self.player.is_first_player, 1, -1)) % 360
           if self.cursor_angle < 0 then
@@ -229,6 +300,10 @@ local entity_classes = {
           end
         end
       end
+    end,
+    reset = function(self)
+      self.is_done = false
+      self.y = 150
     end,
     show = function(self)
       self.is_visible = true
@@ -257,7 +332,7 @@ local entity_classes = {
             render_layer = 18
           })
         end
-        -- figure out if we're done making the perfect snowball
+        -- figure out if we are done making the perfect snowball
         self.is_done = true
         local i
         for i = 1, #self.lumps do
@@ -280,7 +355,7 @@ local entity_classes = {
       self:draw_color(x, y, 6)
       self:draw_color(x, y, 7)
       -- draw cursor
-      if self.wait_frames < 15 and not self.is_done then
+      if not self.is_done then
         pal()
         pal(11, self.player.color)
         local cursor_x = x + ternary(is_first, 0, 1) - 14.5 * sin(self.cursor_angle / 360)
@@ -318,20 +393,82 @@ local entity_classes = {
       end
     end
   },
+  snowball = {
+    render_layer = 6,
+    frames_to_death = 90,
+    init = function(self)
+      local dx = abs(self.player.x - self.player.opponent.x)
+      self.frames_to_hit = flr((dx - 10) / abs(self.vx))
+    end,
+    update = function(self)
+      self:apply_velocity()
+      -- check for snowball hit
+      if decrement_counter_prop(self, "frames_to_hit") and not self.player.opponent.has_dodged then
+        self.player.opponent:get_hit()
+        self:die()
+      end
+    end,
+    draw = function(self, x, y)
+      local is_first = self.player.is_first_player
+      local w = min(max(2, flr(1.2 * abs(self.vx))), 14)
+      sspr2(29 - flr(w / 2), 83, w, 2, x - ternary(is_first, w - 1, 0), y, not is_first)
+    end
+  },
+  dodge = {
+    frames_to_death = 40,
+    draw = function(self, x, y)
+      local sprites = { 1, 2, 1, 3, 4, 5 }
+      local i
+      for i = 1, #sprites do
+        local n = ternary(self.player.is_first_player, #sprites + 1 - i, i)
+        local f = self.frames_alive - 1 * n
+        local y_offset = 0.04 * f * f - f
+        if y_offset < 0 then
+          sspr2(6 * sprites[i], 85, 6, 7, x + 7 * i - 24, y + y_offset)
+        end
+      end
+    end
+  },
+  win = {
+    frames_to_death = 130,
+    draw = function(self, x, y)
+      draw_bubble_letters_with_shadow({ 11, 12, 7 }, x, y, self.player.color, self.player.dark_color)
+    end
+  },
+  draw = {
+    frames_to_death = 130,
+    draw = function(self, x, y)
+      draw_bubble_letters_with_shadow({ 3, 5, 6, 11 }, x, y, 13, 1)
+    end
+  },
   score = {
-    wins = 0,
+    points = 2,
     render_layer = 11,
+    frames_to_point = 0,
+    update = function(self)
+      if decrement_counter_prop(self, "frames_to_point") then
+        self.points += 1
+      end
+    end,
     draw = function(self, x, y)
       pal(11, 12)
       local i
       for i = 1, 3 do
-        if self.wins >= ternary(self.player.is_first_player, i, 4 - i) then
+        if self.points >= ternary(self.player.is_first_player, i, 4 - i) then
           pal(11, self.player.color)
         else
           pal(11, self.player.dark_color)
         end
         sspr2(50, 72, 3, 20, x - 13 + 6 * i, y - 10)
       end
+    end,
+    add_point = function(self, frames)
+      self.frames_to_point = frames
+    end,
+    reset = function(self)
+      self.points = 0
+      self.frames_to_point = 0
+      self.is_visible = false
     end
   },
   snowfall = {
@@ -421,6 +558,10 @@ local entity_classes = {
         print2_center("press", x, y + 14, 1)
         print2_center("button", x, y + 20)
       end
+    end,
+    reset = function(self)
+      self.is_visible = true
+      self.is_ready = false
     end
   },
   title_blinders = {
@@ -429,21 +570,32 @@ local entity_classes = {
     bottom_y = 73,
     amount_open = 0,
     update = function(self)
-      if self.animation == "opening" then
-        self.amount_open += 1
-        if self.amount_open >= 70 then
+      if self.animation == "closing" then
+        self.amount_open -= 1
+        if self.amount_open <= 0 then
           self.animation = nil
-          allow_bows()
+          init_title()
+        end
+      elseif self.animation == "opening" then
+        self.amount_open += 1
+        if self.amount_open >= 80 then
+          self.animation = nil
+        elseif self.amount_open == 40 then
+          start_bows()
         end
       end
     end,
     draw = function(self)
-      rectfill2(0, 0, 127, 65 - 34 * (self.amount_open / 70), 0)
-      rectfill2(0, 73 + 17 * (self.amount_open / 70), 127, 127)
+      rectfill2(0, 0, 127, 65 - 34 * (self.amount_open / 40), 0)
+      rectfill2(0, 73 + 17 * (self.amount_open / 40), 127, 127)
     end,
     open = function(self)
       self.animation = "opening"
-      self.visible_frames = 70
+      self.visible_frames = 80
+    end,
+    close = function(self)
+      self.is_visible = true
+      self.animation = "closing"
     end
   },
   game_blinders = {
@@ -460,11 +612,13 @@ local entity_classes = {
     end
   },
   snow_poof = {
+    render_layer = 7,
     frames_to_death = 0,
+    num_snowflakes = 10,
     init = function(self)
       self.snowflakes = {}
       local i
-      for i = 1, 10 do
+      for i = 1, self.num_snowflakes do
         local angle = rnd_int(1, 360)
         local speed = 2 + rnd(3)
         add(self.snowflakes, {
@@ -512,12 +666,14 @@ function _init()
     spawn_entity("player", 20, 65, {
       player_num = 1,
       is_first_player = true,
+      facing = 1,
       color = 12,
       dark_color = 1
     }),
     spawn_entity("player", 106, 65, {
       player_num = 2,
       is_first_player = false,
+      facing = -1,
       color = 8,
       dark_color = 2
     })
@@ -541,18 +697,26 @@ function _init()
   -- title screen
   title = spawn_entity("title", 14, 19)
   -- start text
-  start = spawn_entity("start", 34, 55)
-  -- black out anything that's offscreen
+  start = spawn_entity("start", 34, 51)
+  -- black out anything that is offscreen
   spawn_entity("game_blinders")
   title_blinders = spawn_entity("title_blinders")
   -- debug, skip to start
-  if skip_to_start then
+  if skip_to_start or skip_to_throw then
     title.is_visible = false
-    title_blinders.amount_open = 70
+    title_blinders.amount_open = 80
     title_blinders.is_visible = false
     players[1].ready.is_visible = false
     players[2].ready.is_visible = false
-    start_game()
+    start_round()
+  end
+  if skip_to_throw then
+    players[1].is_ready_to_throw = true
+    players[1]:animate("aim")
+    players[2].is_ready_to_throw = true
+    players[2]:animate("aim")
+    players[1].score.is_visible = starting_points and (starting_points[1] > 0 or starting_points[2] > 0)
+    players[2].score.is_visible = players[1].score.is_visible
   end
 end
 
@@ -577,6 +741,12 @@ function _update()
   -- update each entity
   local entity
   for entity in all(entities) do
+    entity.has_updated_this_frame = false
+  end
+  -- update each entity
+  local entity
+  for entity in all(entities) do
+    entity.has_updated_this_frame = true
     if entity.is_freeze_frame_immune or game_is_running then
       if decrement_counter_prop(entity, "frames_to_death") then
         entity:die()
@@ -584,6 +754,9 @@ function _update()
         increment_counter_prop(entity, "frames_alive")
         if decrement_counter_prop(entity, "visible_frames") then
           entity.is_visible = false
+        end
+        if decrement_counter_prop(entity, "hidden_frames") then
+          entity.is_visible = true
         end
         entity:update()
       end
@@ -614,10 +787,10 @@ function _draw()
   sspr2(9, 92, 9, 9, 32, 69) -- distant left tree
   sspr2(53, 69, 11, 23, 0, 53) -- far left tree
   sspr2(2, 101, 16, 27, 111, 49) -- far right tre
-  -- draw each entity that's within the main view area
+  -- draw each entity that is within the main view area
   local entity
   for entity in all(entities) do
-    if entity.is_visible and entity.frames_alive >= entity.hidden_frames then
+    if entity.is_visible then
       pal()
       entity:draw(entity.x, entity.y)
     end
@@ -736,23 +909,114 @@ end
 function remove_title()
   scene = "removing_title"
   title.visible_frames = 10
-  players[1].ready.visible_frames = 27
-  players[2].ready.visible_frames = 27
+  players[1].ready.visible_frames = 20
+  players[2].ready.visible_frames = 20
   title_blinders:open()
 end
-function allow_bows()
+function start_bows()
   scene = "bows"
-end
-function bows_done()
-  scene = 'starting_game'
-  players[1]:animate({ 'bow_up' })
-  players[2]:animate({ 'bow_up', { -1, 30 } }, function()
-    start_game()
+  players[1]:animate("bow")
+  players[2]:animate("bow", function()
+    start_round()
   end)
 end
-function start_game()
-  scene = 'game'
-  start:show()
+function bows_done()
+  scene = "starting_game"
+  players[1]:animate({ "bow_up" })
+  players[2]:animate({ "bow_up", { -1, 30 } }, function()
+    start_round()
+  end)
+end
+function start_round()
+  scene = "game"
+  players[1]:start_packing_snow()
+  players[2]:start_packing_snow()
+end
+function end_round()
+  scene = "round-end"
+  -- figure out the winner
+  local winner
+  if not players[1].has_been_hit and players[2].has_been_hit then
+    winner = players[1]
+  elseif not players[2].has_been_hit and players[1].has_been_hit then
+    winner = players[2]
+  end
+  -- if there is a winner, give that player a point
+  if winner then
+    winner:animate({ { -1, 30 } }, function()
+      players[1].score.hidden_frames = 20
+      players[2].score.hidden_frames = 20
+      local is_final_point = (winner.score.points >= 2)
+      winner.score:add_point(45)
+      winner:animate({ "celebrate", { -1, 60 } }, function()
+        if is_final_point then
+          declare_winner(winner)
+        else
+          winner:animate("stop_celebrating")
+          winner.opponent:animate("stop_blocking", function()
+            reset_round()
+          end)
+        end
+      end)
+    end)
+  -- if there is no winner, show a draw
+  else
+    players[1]:animate({ { -1, 30 } }, function()
+      players[1].score.hidden_frames = 20
+      players[2].score.hidden_frames = 20
+      local is_final_point = { players[1].score.points >= 2, players[2].score.points >= 2 }
+      players[1].score:add_point(45)
+      players[2].score:add_point(45)
+      players[1]:animate("stop_blocking")
+      players[2]:animate({ "stop_blocking", { -1, 50 } }, function()
+        if is_final_point[1] and is_final_point[2] then
+          declare_draw()
+        elseif is_final_point[1] then
+          declare_winner(players[1])
+        elseif is_final_point[2] then
+          declare_winner(players[2])
+        else
+          reset_round()
+        end
+      end)
+    end)
+  end
+end
+function declare_winner(winner)
+  spawn_entity("win", winner.x - 15, winner.y - 18, {
+    player = winner
+  })
+  winner:animate("celebrate")
+  winner.opponent:animate({ "drop", { -1, 30 } }, function()
+    title_blinders:close()
+    winner.opponent:animate({ { -1, 100 } }, function()
+      winner:animate("stop_celebrating")
+      winner.opponent:animate("get_up")
+    end)
+  end)
+end
+function declare_draw()
+  spawn_entity("draw", 39, 51)
+  players[1]:animate({ "drop", { -1, 130 }, "get_up" })
+  players[2]:animate({ "drop", { -1, 30 } }, function()
+    title_blinders:close()
+    players[2]:animate({ { -1, 100 }, "get_up" })
+  end)
+end
+function reset_round()
+  players[1]:reset()
+  players[2]:reset()
+  start_round()
+end
+function init_title()
+  scene = "title"
+  title.is_visible = true
+  players[1]:reset()
+  players[2]:reset()
+  players[1].score:reset()
+  players[2].score:reset()
+  players[1].ready:reset()
+  players[2].ready:reset()
 end
 
 
@@ -945,15 +1209,15 @@ b6667777777b000b6677777b00000b66777b0001111111110011111011111001100000110011111b
 222222222222222222222222222222222222000033bbbb0000bbb0dd77d00000446ddd6dddd6ddd6ddd6ddd6ddd6ddd6ddd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6
 2222222222222222222222222222222222220000333bb33000bbb0dddd7d000044dd6ddd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d
 22222222222222222222222222222222222200003333333033bbb0ddddddd00044d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d666d6666666d6666666d66666
-22222222222222222222222222222222222200003333333333bbb0dddddddd00446d6d6d666d6666666d6666666d6666666d666d666666d6666666d66666666d
-22222222222222222222222222222222222200003333333330bbb0dddddd0000446666666666666d6666666d6666666d66666666666666666666666666666666
-22222222222111100001100001110111110100003333330000bbb0dd6dddd0004466d66666666666666666666666666666666666666666666666666666666666
-20000022222100010010010010000100000100003333333000bbbdddd66dddd044666666666666666666666666666666666666666666d66666666666666d6666
-20000022222100001100001100000100000100003333333000bbbddddd7d000044666666666666666d66666666666d6666666666666666666666666666666666
-2bbbbb22222100001100001100111111000100033330333000bbbddddddd77d04d6666d666666666666666666666666666666666666666666666666666666666
-20bbb0222221000011000011000011000001000333003336000bbddddddddddd46666666666666666666666666666666666666666666666666d6666666666666
-200b00222221000100100100100011000000606333606666000bbddd000000004666666666666666666666666666666666666666666666666666666666666666
-20b0002222211110000110000111011111010666666000000000b7d0000000004666666666666666666666666666666666666666666666666666666666666666
+22222222222222222222227777777777777700003333333333bbb0dddddddd00446d6d6d666d6666666d6666666d6666666d666d666666d6666666d66666666d
+22222222222222222222220000007777777700003333333330bbb0dddddd0000446666666666666d6666666d6666666d66666666666666666666666666666666
+22222211110000110000111011111010000000003333330000bbb0dd6dddd0004466d66666666666666666666666666666666666666666666666666666666666
+20000010001001001001000010000010000000003333333000bbbdddd66dddd044666666666666666666666666666666666666666666d66666666666666d6666
+20000010000110000110000010000010000000003333333000bbbddddd7d000044666666666666666d66666666666d6666666666666666666666666666666666
+2bbbbb10000110000110011111100010000000033330333000bbbddddddd77d04d6666d666666666666666666666666666666666666666666666666666666666
+20bbb0100001100001100001100000100000000333003336000bbddddddddddd46666666666666666666666666666666666666666666666666d6666666666666
+200b00100010010010010001100000000000606333606666000bbddd000000004666666666666666666666666666666666666666666666666666666666666666
+20b0001111000011000011101111101000000666666000000000b7d0000000004666666666666666666666666666666666666666666666666666666666666666
 20bb000000000d000000000000000004444444444444444444444444444444444666666666666666666666666666666666666666666666666666666666666666
 20bbb00700000dd00044444444444444444444444444444444444444444444444666666666666d66666666666666666666666666666666666666666666666666
 20bbbb000000ddd000444444444444444449aaaaaaaaaaa9a9999999999999444666666666666666666666666666666666666666666666666666666666666666
