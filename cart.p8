@@ -12,6 +12,7 @@ render layers:
   10: game_blinders
   11: score
   12: snowball_pane
+  13: wind_indicator
   ...
   18: snow_poof (pane)
   19: start
@@ -65,6 +66,13 @@ local screen_shake_frames
 -- input vars
 local buttons
 local button_presses
+
+-- wind vars
+local wind_is_active
+local wind_active_frames
+local wind_switch_frames
+local wind_pressure
+local wind_target_pressure
 
 -- entity vars
 local entities
@@ -177,11 +185,17 @@ local entity_classes = {
     end,
     throw_snowball = function(self)
       self:animate("throw_start", function()
+        -- snowball speed increases if the wind is in your favor
+        local speed = 4
+        if (wind_pressure > 0) == self.is_first_player then
+          speed += 14.5 * abs(wind_pressure) / 5
+        end
+        -- throw snowball
+        self:animate("throw")
         self.snowball = spawn_entity("snowball", self.x + 11 * self.facing, self.y + 5, {
           player = self,
-          vx = 5 * self.facing
+          vx = speed * self.facing
         })
-        self:animate("throw")
       end)
     end,
     get_hit = function(self)
@@ -441,6 +455,16 @@ local entity_classes = {
       draw_bubble_letters_with_shadow({ 3, 5, 6, 11 }, x, y, 13, 1)
     end
   },
+  wind_indicator = {
+    render_layer = 13,
+    draw = function(self, x, y)
+      local w = ceil(19 * abs(wind_pressure / 5))
+      if w > 1 then
+        pal(11, players[ternary(wind_pressure < 0, 2, 1)].color)
+        sspr2(3 + (19 - w), 80, w, 5, x + ternary(wind_pressure < 0, 1 - w, 0), y, wind_pressure < 0)
+      end
+    end
+  },
   score = {
     points = 2,
     render_layer = 11,
@@ -492,6 +516,9 @@ local entity_classes = {
       local i
       for i = 1, #self.snowflakes do
         local snowflake = self.snowflakes[i]
+        snowflake.vx *= 0.6
+        snowflake.vx += wind_pressure / 3
+        snowflake.x += snowflake.vx * (1 - snowflake.distance_from_camera)
         snowflake.y += 0.6 * (1 - snowflake.distance_from_camera)
       end
       -- remove snowflakes that hit the ground
@@ -516,8 +543,9 @@ local entity_classes = {
         sprite = 3
       end
       add(self.snowflakes, {
-        x = rnd_int(-5, 131),
+        x = rnd_int(-15, 141),
         y = 29,
+        vx = 0,
         sprite = sprite,
         distance_from_camera = distance_from_camera
       })
@@ -661,6 +689,11 @@ function _init()
   buttons = { {}, {} }
   button_presses = { {}, {} }
   entities = {}
+  wind_is_active = false
+  wind_active_frames = 0
+  wind_switch_frames = 0
+  wind_pressure = 0
+  wind_target_pressure = 0
   -- spawn players
   players = {
     spawn_entity("player", 20, 65, {
@@ -684,14 +717,14 @@ function _init()
   spawn_entity("snowfall", 0, 0, {
     min_dist = 0.0,
     max_dist = 0.4,
-    spawn_rate = 0.2,
+    spawn_rate = 0.25,
     render_layer = 9
   })
   -- background snowfall
   spawn_entity("snowfall", 0, 0, {
     min_dist = 0.4,
     max_dist = 0.8,
-    spawn_rate = 0.3,
+    spawn_rate = 0.35,
     render_layer = 1
   })
   -- title screen
@@ -701,6 +734,8 @@ function _init()
   -- black out anything that is offscreen
   spawn_entity("game_blinders")
   title_blinders = spawn_entity("title_blinders")
+  -- wind indicator
+  spawn_entity("wind_indicator", 62, 26)
   -- debug, skip to start
   if skip_to_start or skip_to_throw then
     title.is_visible = false
@@ -738,13 +773,36 @@ function _update()
       buttons[p][i] = btn(i, controllers[p])
     end
   end
+  -- update the wind
+  if wind_is_active then
+    wind_active_frames = increment_counter(wind_active_frames)
+    wind_switch_frames = decrement_counter(wind_switch_frames)
+    local max_wind_pressure = mid(1, wind_active_frames / 110, 5)
+    if wind_switch_frames <= 0 then
+      wind_switch_frames = mid(0, 50 - flr(wind_active_frames / 10), 50) + rnd_int(40, 50)
+      local dir
+      if wind_target_pressure > 0 then
+        dir = -1
+      elseif wind_target_pressure < 0 then
+        dir = 1
+      else
+        dir = ternary(rnd() < 0.5, -1, 1)
+      end
+      wind_target_pressure = dir * max_wind_pressure * rnd_num(0.4, 1.0)
+    elseif wind_switch_frames % 5 == 0 then
+      wind_target_pressure += 2.0 * rnd() - 1.0
+    end
+    wind_target_pressure = mid(-max_wind_pressure, wind_target_pressure, max_wind_pressure)
+  end
+  local wind_change = (wind_target_pressure - wind_pressure) / 7
+  local wind_change_dir = ternary(wind_change < 0, -1, 1)
+  wind_change = min(abs(wind_change), 0.3)
+  wind_pressure += wind_change_dir * wind_change
   -- update each entity
   local entity
   for entity in all(entities) do
     entity.has_updated_this_frame = false
   end
-  -- update each entity
-  local entity
   for entity in all(entities) do
     entity.has_updated_this_frame = true
     if entity.is_freeze_frame_immune or game_is_running then
@@ -929,11 +987,17 @@ function bows_done()
 end
 function start_round()
   scene = "game"
+  wind_is_active = true
+  wind_active_frames = 0
+  wind_switch_frames = 0
+  wind_target_pressure = 0
   players[1]:start_packing_snow()
   players[2]:start_packing_snow()
 end
 function end_round()
   scene = "round-end"
+  wind_is_active = false
+  wind_target_pressure = 0
   -- figure out the winner
   local winner
   if not players[1].has_been_hit and players[2].has_been_hit then
@@ -1206,11 +1270,11 @@ b6667777777b000b6677777b00000b66777b0001111111110011111011111001100000110011111b
 22222222222222222222222222222222222200003333300000bbb0dddd00000044ddddddddd6ddddddddddd6ddddddddddd6dddddddddddddddddddddddddddd
 22222222222222222222222222222222222200003333300000bbb0ddddd0000044dddddddddddddddddddddddddddddddddddddd6ddd6ddd6ddd6ddd6ddd6dd6
 22222222222222222222222222222222222200003333300000bbb0d77ddd000044ddddddd6ddd6ddd6ddd6ddd6ddd6ddd6dddd6ddd6ddd6ddd6ddd6ddd6ddd6d
-222222222222222222222222222222222222000033bbbb0000bbb0dd77d00000446ddd6dddd6ddd6ddd6ddd6ddd6ddd6ddd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6
-2222222222222222222222222222222222220000333bb33000bbb0dddd7d000044dd6ddd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d
-22222222222222222222222222222222222200003333333033bbb0ddddddd00044d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d666d6666666d6666666d66666
-22222222222222222222227777777777777700003333333333bbb0dddddddd00446d6d6d666d6666666d6666666d6666666d666d666666d6666666d66666666d
-22222222222222222222220000007777777700003333333330bbb0dddddd0000446666666666666d6666666d6666666d66666666666666666666666666666666
+222b000b000b000b000b0022222222222222000033bbbb0000bbb0dd77d00000446ddd6dddd6ddd6ddd6ddd6ddd6ddd6ddd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6
+222bb00bb00bb00bb00bb0222222222222220000333bb33000bbb0dddd7d000044dd6ddd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d
+222bbb0bbb0bbb0bbb0bbb2222222222222200003333333033bbb0ddddddd00044d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d666d6666666d6666666d66666
+222bb00bb00bb00bb00bb07777777777777700003333333333bbb0dddddddd00446d6d6d666d6666666d6666666d6666666d666d666666d6666666d66666666d
+222b000b000b000b000b000000007777777700003333333330bbb0dddddd0000446666666666666d6666666d6666666d66666666666666666666666666666666
 22222211110000110000111011111010000000003333330000bbb0dd6dddd0004466d66666666666666666666666666666666666666666666666666666666666
 20000010001001001001000010000010000000003333333000bbbdddd66dddd044666666666666666666666666666666666666666666d66666666666666d6666
 20000010000110000110000010000010000000003333333000bbbddddd7d000044666666666666666d66666666666d6666666666666666666666666666666666
