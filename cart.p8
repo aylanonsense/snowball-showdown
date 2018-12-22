@@ -4,9 +4,18 @@ __lua__
 
 --[[
 render layers:
-  9: ...
-  ~black out everything outside of the view pane~
-  10: ...
+   1: snowfall (background)
+   5: player
+   9: snowfall (foreground)
+  10: game_blinders
+  11: score
+  12: snowball_pane
+  ...
+  18: snow_poof (pane)
+  19: start
+  20: title_blinders
+  21: title
+  21: ready_up
 ]]
 
 -- useful no-op function
@@ -23,15 +32,23 @@ local bg_color = 0
 local player_animations = {
   stand = { 1 },
   pause = { { -1, 10 } },
-  bow = { { 2, 10 }, { 3, 30 }, { 2, 10 }, 1 },
-  drop = { { 4, 9 }, { 5, 8 } },
-  pack_snow = { { 5, 14 }, { 6, 14 } },
+  bow_down = { { 2, 10 }, { 3, 30 } },
+  bow_up = { { 3, 1 }, { 2, 10 }, 1 },
+  drop = { { 4, 7 }, { 5, 5 } },
+  pack_snow = { { 5, 10 }, { 6, 10 } },
   show_snowball = { { 7, 8 }, { 15, 30 } },
   aim = { { 8, 12 }, 9 },
   throw = { { 10, 3 }, 14 },
   dodge = { { 11, 20 } },
   block = { { 12, 30 }, { 13, 20 } }
 }
+
+-- debug vars
+local skip_to_start = false
+
+-- scene vars
+local scene
+local scene_frames
 
 -- effect vars
 local game_frames
@@ -44,19 +61,29 @@ local button_presses
 
 -- entity vars
 local entities
+local players
+local title
+local start
+local title_blinders
 local entity_classes = {
   player = {
     sprite = 1,
     animation_queue = nil,
     animation_frames = -1,
     on_animation_done = nil,
+    has_bowed = false,
+    has_started_packing = false,
     init = function(self)
       self.animation_queue = {}
-      self.pane = spawn_entity("snowball_pane", ternary(self.is_first_player, 31, 95), 103, {
+      self.pane = spawn_entity("snowball_pane", ternary(self.is_first_player, 31, 95), 150, {
         player = self,
-        is_visible = true
+        is_visible = false
       })
       self.score = spawn_entity("score", ternary(self.is_first_player, 31, 95), 20, {
+        player = self,
+        is_visible = false
+      })
+      self.ready = spawn_entity("ready_up", ternary(self.is_first_player, 21, 107), 83, {
         player = self,
         is_visible = true
       })
@@ -64,16 +91,43 @@ local entity_classes = {
     update = function(self)
       -- apply animation
       self:apply_animation()
-      local has_pressed_button = btnp2(4, self.player_num, true) or btnp2(5, self.player_num, true)
+      local has_pressed_button = any_button_pressed(self.player_num, true)
       if has_pressed_button then
-        -- self:animate({ "stand", "pause", "drop", "pack_snow", "pack_snow", "pack_snow", "show_snowball", "aim", "pause", "pause", "block", "stand", "pause", "pause", "aim", "pause", "pause", "throw" })
-        self.pane:activate()
+        if scene == "title" then
+          self.ready:activate()
+        elseif scene == "bows" then
+          self:animate("bow_down", function()
+            self.has_bowed = true
+            if self.opponent.has_bowed then
+              bows_done()
+            end
+          end)
+        elseif scene == "game" then
+          -- start packing a snowball
+          if not self.has_started_packing then
+            self.has_started_packing = true
+            self:animate("drop", function()
+              self:keep_packing_snow()
+              self.pane:show()
+            end)
+          -- finish packing a snowball
+          elseif not self.pane.is_done then
+            if self.pane:activate() then
+              self:animate({ 'show_snowball', 'aim' }, function()
+                self.pane.is_visible = false
+              end)
+            end
+          end
+        else
+          -- self:animate({ "stand", "pause", "drop", "pack_snow", "pack_snow", "pack_snow", "show_snowball", "aim", "pause", "pause", "block", "stand", "pause", "pause", "aim", "pause", "pause", "throw" })
+          self.pane:activate()
+        end
       end
     end,
     draw = function(self, x, y)
       -- colorize
-      pal(3, ternary(self.is_first_player, 1, 2))
-      pal(11, ternary(self.is_first_player, 12, 8))
+      pal(3, self.dark_color)
+      pal(11, self.color)
       -- draw player sprite
       if self.sprite == 14 then
         sspr2(102, 18, 19, 16, x - ternary(self.is_first_player, 7, 11), y + 1, not self.is_first_player)
@@ -82,6 +136,11 @@ local entity_classes = {
       else
         sspr2(17 * ((self.sprite - 1) % 7), 18 * flr((self.sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
       end
+    end,
+    keep_packing_snow = function(self)
+      self:animate("pack_snow", function()
+        self:keep_packing_snow()
+      end)
     end,
     animate = function(self, animation, on_done)
       if type(animation) == "string" then
@@ -99,7 +158,12 @@ local entity_classes = {
         increment_counter_prop(self, "animation_frames")
         -- set the player's sprite based on the animation data
         local animation = self.animation_queue[1]
-        local animation_data = player_animations[animation]
+        local animation_data
+        if type(animation) == 'string' then
+          animation_data = player_animations[animation]
+        else
+          animation_data = { animation }
+        end
         local total_frames = 0
         local i
         for i = 1, #animation_data do
@@ -140,9 +204,36 @@ local entity_classes = {
     end
   },
   snowball_pane = {
-    render_layer = 10,
+    render_layer = 12,
     cursor_angle = 0,
+    wait_frames = 0,
+    is_done = false,
     init = function(self)
+      self.lumps = {}
+    end,
+    update = function(self)
+      if self.is_visible then
+        -- slide up
+        if self.y > 103 then
+          self.y -= max(0.5, (self.y - 103) / 5)
+          if self.y <= 103 then
+            self.y = 103
+          end
+        end
+        -- spin the cursor
+        decrement_counter_prop(self, "wait_frames")
+        if self.wait_frames <= 0 then
+          self.cursor_angle = (self.cursor_angle + 6 * ternary(self.player.is_first_player, 1, -1)) % 360
+          if self.cursor_angle < 0 then
+            self.cursor_angle += 360
+          end
+        end
+      end
+    end,
+    show = function(self)
+      self.is_visible = true
+      self.cursor_angle = 0
+      self.wait_frames = 40
       self.lumps = {}
       local i
       for i = 1, 6 do
@@ -156,17 +247,25 @@ local entity_classes = {
         })
       end
     end,
-    update = function(self)
-      self.cursor_angle = (self.cursor_angle + 8 * ternary(self.player.is_first_player, 1, -1)) % 360
-      if self.cursor_angle < 0 then
-        self.cursor_angle += 360
-      end
-    end,
     activate = function(self)
-      local lump_index = flr((self.cursor_angle + 30) / 60) % 6 + 1
-      local lump = self.lumps[lump_index]
-      if lump.size > 0 then
-        lump.size -= 1
+      if self.is_visible and self.wait_frames <= 0 then
+        local lump_index = flr((self.cursor_angle + 30) / 60) % 6 + 1
+        local lump = self.lumps[lump_index]
+        if lump.size > 0 then
+          lump.size -= 1
+          spawn_entity("snow_poof", self.x + lump.x + 6, self.y + lump.y + 6, {
+            render_layer = 18
+          })
+        end
+        -- figure out if we're done making the perfect snowball
+        self.is_done = true
+        local i
+        for i = 1, #self.lumps do
+          if self.lumps[i].size > 0 then
+            self.is_done = false
+          end
+        end
+        return self.is_done
       end
     end,
     draw = function(self, x, y)
@@ -181,25 +280,27 @@ local entity_classes = {
       self:draw_color(x, y, 6)
       self:draw_color(x, y, 7)
       -- draw cursor
-      pal()
-      pal(11, ternary(is_first, 12, 8))
-      local cursor_x = x + ternary(is_first, 0, 1) - 14.5 * sin(self.cursor_angle / 360)
-      local cursor_y = y - 14.5 * cos(self.cursor_angle / 360)
-      local sector = flr((self.cursor_angle + 22.5) / 45) % 8
-      local cursor_sprite
-      if sector == 0 or sector == 4 then
-        cursor_sprite = 1
-      elseif sector == 2 or sector == 6 then
-        cursor_sprite = 3
-      else
-        cursor_sprite = 2
+      if self.wait_frames < 15 and not self.is_done then
+        pal()
+        pal(11, self.player.color)
+        local cursor_x = x + ternary(is_first, 0, 1) - 14.5 * sin(self.cursor_angle / 360)
+        local cursor_y = y - 14.5 * cos(self.cursor_angle / 360)
+        local sector = flr((self.cursor_angle + 22.5) / 45) % 8
+        local cursor_sprite
+        if sector == 0 or sector == 4 then
+          cursor_sprite = 1
+        elseif sector == 2 or sector == 6 then
+          cursor_sprite = 3
+        else
+          cursor_sprite = 2
+        end
+        sspr2(1, 81 + 5 * cursor_sprite, 5, 5, cursor_x - 2.5, cursor_y - 2.5, sector > 4, 2 < sector and sector < 6)
       end
-      sspr2(1, 81 + 5 * cursor_sprite, 5, 5, cursor_x - 2.5, cursor_y - 2.5, sector > 4, 2 < sector and sector < 6)
     end,
     draw_color = function(self, x, y, color)
       local is_first = self.player.is_first_player
       pal()
-      pal(11, ternary(is_first, 12, 8))
+      pal(11, self.player.color)
       -- make all colors except this one transparent
       local i
       for i = 0, 15 do
@@ -219,15 +320,15 @@ local entity_classes = {
   },
   score = {
     wins = 0,
-    render_layer = 10,
+    render_layer = 11,
     draw = function(self, x, y)
       pal(11, 12)
       local i
       for i = 1, 3 do
         if self.wins >= ternary(self.player.is_first_player, i, 4 - i) then
-          pal(11, ternary(self.player.is_first_player, 12, 8))
+          pal(11, self.player.color)
         else
-          pal(11, ternary(self.player.is_first_player, 1, 2))
+          pal(11, self.player.dark_color)
         end
         sspr2(50, 72, 3, 20, x - 13 + 6 * i, y - 10)
       end
@@ -286,27 +387,120 @@ local entity_classes = {
     end
   },
   title = {
-    render_layer = 11,
+    render_layer = 20,
     draw = function(self, x, y)
-      rectfill2(0, 0, 127, 65, 0)
-      rectfill2(0, 74, 127, 127)
       draw_bubble_letters_with_shadow({ 8, 7, 1, 11, 9, 6, 2, 2 }, x + 2, y, 13, 1)
       draw_bubble_letters_with_shadow({ 8, 10, 1, 11, 3, 1, 11, 7 }, x, y + 16, 13, 1)
-      print2_center("created by bridgs", 64, 122, 1)
-      print2_center("player 1", 21, 80, 12)
-      if self.frames_alive % 35 < 25 then
-        print2_center("press", 21, 90+4, 1)
-        print2_center("button", 21, 96+4)
+      print2_center("created by bridgs", 64, y + 32, 1)
+    end
+  },
+  start = {
+    is_visible = false,
+    draw = function(self, x, y)
+      draw_bubble_letters_with_shadow({ 8, 4, 6, 5, 4}, x, y, 13, 1)
+    end,
+    show = function(self)
+      self.is_visible = true
+      self.visible_frames = 60
+    end
+  },
+  ready_up = {
+    render_layer = 21,
+    activate = function(self)
+      self.is_ready = not self.is_ready
+      if self.is_ready and self.player.opponent.ready.is_ready then
+        remove_title()
       end
-      print2_center("player 2", 107, 80, 8)
-      pal(11, 8)
-      sspr2(79, 47, 34, 11, 90, 94)
+    end,
+    draw = function(self, x, y)
+      print2_center("player " .. self.player.player_num, x, y, self.player.color)
+      if self.is_ready then
+        pal(11, self.player.color)
+        sspr2(79, 47, 34, 11, x - 17, y + 14)
+      elseif self.frames_alive % 35 < 25 then
+        print2_center("press", x, y + 14, 1)
+        print2_center("button", x, y + 20)
+      end
+    end
+  },
+  title_blinders = {
+    render_layer = 20,
+    top_y = 65,
+    bottom_y = 73,
+    amount_open = 0,
+    update = function(self)
+      if self.animation == "opening" then
+        self.amount_open += 1
+        if self.amount_open >= 70 then
+          self.animation = nil
+          allow_bows()
+        end
+      end
+    end,
+    draw = function(self)
+      rectfill2(0, 0, 127, 65 - 34 * (self.amount_open / 70), 0)
+      rectfill2(0, 73 + 17 * (self.amount_open / 70), 127, 127)
+    end,
+    open = function(self)
+      self.animation = "opening"
+      self.visible_frames = 70
+    end
+  },
+  game_blinders = {
+    render_layer = 10,
+    draw = function(self)
+      palt(6, true)
+      palt(7, true)
+      palt(13, true)
+      pal(4, 0)
+      sspr2(64, 71, 64, 57, 0, 32) -- snow drifts
+      sspr2(64, 71, 64, 57, 63, 32, true) -- snow drifts
+      rectfill2(0, 0, 127, 32, 0)
+      rectfill2(0, 89, 127, 39)
+    end
+  },
+  snow_poof = {
+    frames_to_death = 0,
+    init = function(self)
+      self.snowflakes = {}
+      local i
+      for i = 1, 10 do
+        local angle = rnd_int(1, 360)
+        local speed = 2 + rnd(3)
+        add(self.snowflakes, {
+          x = self.x,
+          y = self.y,
+          vx = speed * cos(angle / 360),
+          vy = speed * sin(angle / 360),
+          sprite = max(1, rnd_int(1, 6) - 3)
+        })
+      end
+    end,
+    update = function(self)
+      local i
+      for i = 1, #self.snowflakes do
+        local snowflake = self.snowflakes[i]
+        snowflake.vx *= 0.85
+        snowflake.vy *= 0.85
+        snowflake.vy += 0.1
+        snowflake.x += snowflake.vx
+        snowflake.y += snowflake.vy
+      end
+    end,
+    draw = function(self)
+      local i
+      for i = 1, #self.snowflakes do
+        local snowflake = self.snowflakes[i]
+        sspr2(6, 89 + 3 * snowflake.sprite, 3, 3, snowflake.x, snowflake.y)
+      end
     end
   }
 }
 
 function _init()
   -- init vars
+  scene = "title"
+  scene_frames = 0
   game_frames = 0
   freeze_frames = 0
   screen_shake_frames = 0
@@ -314,14 +508,22 @@ function _init()
   button_presses = { {}, {} }
   entities = {}
   -- spawn players
-  spawn_entity("player", 20, 65, {
-    player_num = 1,
-    is_first_player = true
-  })
-  spawn_entity("player", 106, 65, {
-    player_num = 2,
-    is_first_player = false
-  })
+  players = {
+    spawn_entity("player", 20, 65, {
+      player_num = 1,
+      is_first_player = true,
+      color = 12,
+      dark_color = 1
+    }),
+    spawn_entity("player", 106, 65, {
+      player_num = 2,
+      is_first_player = false,
+      color = 8,
+      dark_color = 2
+    })
+  }
+  players[1].opponent = players[2]
+  players[2].opponent = players[1]
   -- foreground snowfall
   spawn_entity("snowfall", 0, 0, {
     min_dist = 0.0,
@@ -336,7 +538,22 @@ function _init()
     spawn_rate = 0.3,
     render_layer = 1
   })
-  spawn_entity("title", 14, 23)
+  -- title screen
+  title = spawn_entity("title", 14, 19)
+  -- start text
+  start = spawn_entity("start", 34, 55)
+  -- black out anything that's offscreen
+  spawn_entity("game_blinders")
+  title_blinders = spawn_entity("title_blinders")
+  -- debug, skip to start
+  if skip_to_start then
+    title.is_visible = false
+    title_blinders.amount_open = 70
+    title_blinders.is_visible = false
+    players[1].ready.is_visible = false
+    players[2].ready.is_visible = false
+    start_game()
+  end
 end
 
 function _update()
@@ -344,6 +561,7 @@ function _update()
   local game_is_running = freeze_frames <= 0
   freeze_frames = decrement_counter(freeze_frames)
   if game_is_running then
+    scene_frames = increment_counter(scene_frames)
     game_frames = increment_counter(game_frames)
     screen_shake_frames = decrement_counter(screen_shake_frames)
   end
@@ -364,6 +582,9 @@ function _update()
         entity:die()
       else
         increment_counter_prop(entity, "frames_alive")
+        if decrement_counter_prop(entity, "visible_frames") then
+          entity.is_visible = false
+        end
         entity:update()
       end
     end
@@ -396,24 +617,7 @@ function _draw()
   -- draw each entity that's within the main view area
   local entity
   for entity in all(entities) do
-    if entity.render_layer < 10 and entity.is_visible and entity.frames_alive >= entity.hidden_frames then
-      pal()
-      entity:draw(entity.x, entity.y)
-    end
-  end
-  -- black out everything outside of the main view area
-  pal()
-  palt(6, true)
-  palt(7, true)
-  palt(13, true)
-  pal(4, 0)
-  sspr2(64, 71, 64, 57, 0, 32) -- snow drifts
-  sspr2(64, 71, 64, 57, 63, 32, true) -- snow drifts
-  rectfill2(0, 0, 127, 32, 0)
-  rectfill2(0, 89, 127, 39)
-  -- draw each entity that's outside of the main view area
-  for entity in all(entities) do
-    if entity.render_layer >= 10 and entity.is_visible and entity.frames_alive >= entity.hidden_frames then
+    if entity.is_visible and entity.frames_alive >= entity.hidden_frames then
       pal()
       entity:draw(entity.x, entity.y)
     end
@@ -446,6 +650,7 @@ function spawn_entity(class_name, x, y, args, skip_init)
       -- render vars
       render_layer = 5,
       is_visible = true,
+      visible_frames = 0,
       hidden_frames = 0,
       -- functions
       init = noop,
@@ -527,6 +732,30 @@ function draw_bubble_letters_with_shadow(sprites, x, y, color, shadow_color)
   draw_bubble_letters(sprites, x, y)
 end
 
+-- scene vars
+function remove_title()
+  scene = "removing_title"
+  title.visible_frames = 10
+  players[1].ready.visible_frames = 27
+  players[2].ready.visible_frames = 27
+  title_blinders:open()
+end
+function allow_bows()
+  scene = "bows"
+end
+function bows_done()
+  scene = 'starting_game'
+  players[1]:animate({ 'bow_up' })
+  players[2]:animate({ 'bow_up', { -1, 30 } }, function()
+    start_game()
+  end)
+end
+function start_game()
+  scene = 'game'
+  start:show()
+end
+
+
 -- wrappers for input methods
 function btn2(button_num, player_num)
   return buttons[player_num][button_num]
@@ -538,6 +767,9 @@ function btnp2(button_num, player_num, consume_press)
     end
     return true
   end
+end
+function any_button_pressed(player_num, consume_press)
+  return btnp2(4, player_num, consume_press) or btnp2(5, player_num, consume_press)
 end
 
 -- bubble sorts a list
