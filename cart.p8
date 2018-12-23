@@ -151,6 +151,7 @@ local entity_classes = {
               local frames_to_hit = incoming_snowball.frames_to_hit - offset
               if frames_alive > 1 and frames_to_hit < 7 then
                 self.has_dodged = true
+                sfx(13, self.channel)
                 spawn_entity("dodge", self.x, self.y - 8, {
                   player = self
                 })
@@ -167,10 +168,11 @@ local entity_classes = {
           elseif not self.pane.is_done then
             if self.pane:activate() then
               if self.opponent.pane.is_done then
-                self.showoff_frames_left = min(max(20, self.opponent.showoff_frames_left + 6), 48)
+                self.showoff_frames_left = min(max(24, self.opponent.showoff_frames_left + 7), 48)
               else
                 self.showoff_frames_left = 48
               end
+              sfx(11, self.channel)
               self:animate({ "show_snowball", { -1, self.showoff_frames_left - 9 }, "aim" }, function()
                 self.pane.is_visible = false
                 self.is_ready_to_throw = true
@@ -216,6 +218,7 @@ local entity_classes = {
       self.pane:reset()
     end,
     throw_snowball = function(self)
+      sfx(4 + self.player_num, self.channel)
       self:animate("throw_start", function()
         -- snowball speed increases if the wind is in your favor
         local speed = 4
@@ -231,6 +234,7 @@ local entity_classes = {
       end)
     end,
     get_hit = function(self)
+      sfx(7, self.channel)
       self.has_been_hit = true
       self.pane.is_visible = false
       self:animate("block")
@@ -382,7 +386,7 @@ local entity_classes = {
       if self.is_visible then
         -- slide up
         if self.y > 103 then
-          self.y -= max(0.5, (self.y - 103) / 5)
+          self.y -= max(0.5, (self.y - 103) / 4)
           if self.y <= 103 then
             self.y = 103
           end
@@ -423,14 +427,17 @@ local entity_classes = {
       end
     end,
     activate = function(self)
-      if self.is_visible and self.wait_frames <= 0 then
+      if self.is_visible and self.wait_frames <= 0 and not self.is_done then
         local lump_index = flr((self.cursor_angle + 30) / 60) % 6 + 1
         local lump = self.lumps[lump_index]
         if lump.size > 0 then
           lump.size -= 1
+          sfx(rnd_int(0, 2), self.player.channel)
           spawn_entity("snow_poof", self.x + lump.x + 6, self.y + lump.y + 6, {
             render_layer = 18
           })
+        else
+          -- sfx(3, self.player.channel)
         end
         -- figure out if we are done making the perfect snowball
         self.is_done = true
@@ -560,6 +567,7 @@ local entity_classes = {
     update = function(self)
       if decrement_counter_prop(self, "frames_to_point") then
         self.points += 1
+        sfx(8, self.player.channel)
       end
     end,
     draw = function(self, x, y)
@@ -655,12 +663,14 @@ local entity_classes = {
     show = function(self)
       self.is_visible = true
       self.visible_frames = 60
+      sfx(10)
     end
   },
   ready_up = {
     render_layer = 21,
     activate = function(self)
       self.is_ready = not self.is_ready
+      sfx(ternary(self.is_ready, 4, 3), self.player.channel)
       if self.is_ready and self.player.opponent.ready.is_ready then
         remove_title()
       end
@@ -790,6 +800,7 @@ function _init()
       player_num = 1,
       is_first_player = true,
       facing = 1,
+      channel = 0,
       color = 12,
       dark_color = 1
     }),
@@ -797,6 +808,7 @@ function _init()
       player_num = 2,
       is_first_player = false,
       facing = -1,
+      channel = 1,
       color = 8,
       dark_color = 2
     })
@@ -888,6 +900,8 @@ function _update()
       end
       wind_target_pressure = mid(-max_wind_pressure, wind_target_pressure, max_wind_pressure)
     end
+  else
+    wind_target_pressure = 0
   end
   local wind_change = (wind_target_pressure - wind_pressure) / 7
   local wind_change_dir = ternary(wind_change < 0, -1, 1)
@@ -1068,6 +1082,7 @@ function remove_title()
 end
 function start_bows()
   scene = "bows"
+  sfx(15)
   players[1]:animate("bow")
   players[2]:animate("bow", function()
     start_round()
@@ -1089,6 +1104,7 @@ function start_round()
   wind_target_pressure = 0
   players[1]:start_packing_snow()
   players[2]:start_packing_snow()
+  sfx(12)
 end
 function end_round()
   scene = "round-end"
@@ -1108,6 +1124,7 @@ function end_round()
       players[2].score.hidden_frames = 20
       local is_final_point = (winner.score.points >= 2)
       winner.score:add_point(45)
+      sfx(9, winner.channel)
       winner:animate({ "celebrate", { -1, 60 } }, function()
         if is_final_point then
           declare_winner(winner)
@@ -1132,8 +1149,12 @@ function end_round()
         if is_final_point[1] and is_final_point[2] then
           declare_draw()
         elseif is_final_point[1] then
+          sfx(9, players[1].channel)
+          players[1]:animate("celebrate")
           declare_winner(players[1])
         elseif is_final_point[2] then
+          sfx(9, players[2].channel)
+          players[2]:animate("celebrate")
           declare_winner(players[2])
         else
           reset_round()
@@ -1146,7 +1167,6 @@ function declare_winner(winner)
   spawn_entity("win", winner.x - 15, winner.y - 18, {
     player = winner
   })
-  winner:animate("celebrate")
   winner.opponent:animate({ "drop", { -1, 30 } }, function()
     title_blinders:close()
     winner.opponent:animate({ { -1, 100 } }, function()
@@ -1415,3 +1435,21 @@ b6667777777b000b6677777b00000b66777b0001111111110011111011111001100000110011111b
 220000000ddddddddd009a9a9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa9999999907777777777777777777777777666666666666666666666666666666666666666
 220000000000000ddd0099a9a9aaaaaaaaaaaaaaaaaaaaaaaaaaa900000000006666666666666666666666666666666666666d44444444444444444444444444
 220000000000000ddd0099999999aaaaaaa9000000000000000000000000000066666666666d4444444444444444444444444444444444444444444444444444
+__sfx__
+010300000061000631006110060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600
+010300000461004631046110060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600006000060000600
+010300000761007631076110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00040000207451c745197351873500700007000070000700007000070000700007000070000700007000070000700007000070000700007000070000700007000070000700007000070000700007000070000700
+0003000018135191351c1452014500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105
+0001000018010120100e0100c0100b0100a0100a0100a010090100901009010090100a0100b0100c0100d0100f0101001012010140101501017010190101c0101f01022010260102a0102e01032010370103d010
+0001000016010110100d0100b0100a0100901009010090100801008010080100801008010090100a0100b0100c0100d0100f010100101201014010170101a0101d0102001024010280102c01030010350103b010
+000200002a61225632216321e6321962215622106220e6220a622096120861207612221221912213122101220f1220d1220c1220a122091220811208112121120c11209112051120311202112011120111201112
+010700001855018541185311852118511185111850100500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000000
+000400001d0101d01121021270212c021300313002130021300113001130021300113001130021300113000130001300013000130001300013000130001300013000130001300013000130001300010000000000
+010200002475024741247412473124731247312473124731247212472124721247212472124721247112471124711247112471124711247112471124711247112470111701007010070100701007010070100701
+0103000000620006410062100611180201802118011000000000018000180201802118021180211f0201f0211f0211f0212402024021240212402224022240222402224012240112401124011240112401124001
+010400001870000700007000000000000187100000000000000000000000000000000000018710000000000000000000000000003710037110371103711047110671107721097210c7210e71113711187111c701
+010200000b5130b5130c5130e52313523195231251312523135231553319533205331b5231b5231d5332153328541215212153122531265412a54126531285312a5312d541305413053130511305030050300503
+00080000056100a621086210361101601086100c62109621036110360100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601
+010a00000000000700007000070000000000000000000700000001871000700007000000000700187100000000000000000000000000000000000000000000000000018710000000000000000000001871000000
+011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
