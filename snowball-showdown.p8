@@ -52,16 +52,19 @@ goto _
 
 --[[
 render layers:
-   1: snowfall (background)
-   4: scarf
-   5: player
-   6: snowball
-   7: snow_poof (snowballs)
-   9: snowfall (foreground)
+  1:  snowfall (background)
+  ...
+  4:  scarf
+  5:  player
+  6:  snowball
+  7:  snow_poof (snowballs)
+  ...
+  9:  snowfall (foreground)
   10: game_blinders
   11: score
   12: snowball_pane
   13: speed_indicator
+  14: label
   ...
   18: snow_poof (pane)
   19: start
@@ -179,6 +182,9 @@ local entity_classes = {
       self.scarf = spawn_entity("scarf", self.x, self.y, {
         player = self
       })
+      self.label = spawn_entity("label", self.x + ternary(self.is_first_player, -10, 12), 26, {
+        player = self
+      })
     end,
     update = function(self)
       decrement_counter_prop(self, "showoff_frames_left")
@@ -195,14 +201,14 @@ local entity_classes = {
           local most_points = max(self.opponent.score.points, self.score.points)
           local difficulty = mid(0.0, most_points * 0.3 + point_diff * 0.3, 1.0)
           if not self.pane.is_done then
-            has_pressed_button = rnd() < (0.13 + 0.26 * difficulty)
+            has_pressed_button = rnd() < (0.14 + 0.3 * difficulty)
           elseif self.is_ready_to_throw and not self.has_taken_action then
             if not self.opponent.pane.is_done then
-              has_pressed_button = rnd() < 0.2
+              has_pressed_button = rnd() < 0.3
             elseif self.opponent.has_taken_action then
-              has_pressed_button = rnd() < (0.03 + 0.055 * difficulty)
+              has_pressed_button = rnd() < (0.03 + 0.067 * difficulty)
             else
-              has_pressed_button = rnd() < (0.002 - 0.001 * difficulty) * (2 + speed_indicator.speed_level)
+              has_pressed_button = rnd() < (0.0019 - 0.0015 * difficulty) * (2 + speed_indicator.speed_level)
             end
           end
         end
@@ -275,10 +281,6 @@ local entity_classes = {
       else
         sspr2(17 * ((self.sprite - 1) % 7), 18 * flr((self.sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
       end
-      -- draw "npc"
-      if self.ready.is_npc then
-        print2_center("npc", self.x + ternary(self.is_first_player, 0, 3), self.y - 9, self.dark_color)
-      end
     end,
     reset = function(self)
       self.snowball = nil
@@ -291,7 +293,7 @@ local entity_classes = {
     end,
     throw_snowball = function(self)
       sfx(4 + self.player_num, self.channel)
-      self:animate({ { 10, mid(1, 7 - flr(speed_indicator.speed_level / 2.2), 7) } }, function()
+      self:animate({ { 10, mid(1, 7 - flr(speed_indicator.speed_level / 3), 7) } }, function()
         -- snowball speed increases if the wind is in your favor
         local speed = 88 / mid(3, 17 - speed_indicator.speed_level, 17)
         -- throw snowball
@@ -394,6 +396,14 @@ local entity_classes = {
             func()
           end
         end
+      end
+    end
+  },
+  label = {
+    render_layer = 14,
+    draw = function(self, x, y)
+      if self.player.ready.is_npc then
+        print2_center("npc", x, y, 13)
       end
     end
   },
@@ -639,7 +649,7 @@ local entity_classes = {
         if self.speed_level >= 15 then
           self.animation = nil
         else
-          self.animation_frames = 20 + 2 * self.speed_level
+          self.animation_frames = 30 + 3 * self.speed_level
         end
       end
       if self.animation == "draining" and decrement_counter_prop(self, "animation_frames") then
