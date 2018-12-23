@@ -5,6 +5,7 @@ __lua__
 --[[
 render layers:
    1: snowfall (background)
+   4: scarf
    5: player
    6: snowball
    7: snow_poof (snowballs)
@@ -48,6 +49,26 @@ local player_animations = {
   block = { 12 },
   stop_blocking = { { -1, 15 }, { 13, 20 }, { 1, 10 } }
 }
+local neck_points = {
+  { 7, 6 },
+  { 8, 7 },
+  { 11, 9 },
+  { 8, 10 },
+  { 8, 12 },
+  { 8, 12 },
+  { 9, 9 },
+  { 8, 6 },
+  { 7, 6 },
+  { 8, 6 },
+  { 8, 5 },
+  { 8, 7 },
+  { 8, 6 },
+  { 10, 6 },
+  { 8, 6 },
+  { 10, 6 },
+  { 8, 6 },
+  { 8, 6 }
+}
 
 -- debug vars
 local skip_to_start = false
@@ -72,6 +93,7 @@ local wind_is_active
 local wind_active_frames
 local wind_switch_frames
 local wind_pressure
+local wind_updraft
 local wind_target_pressure
 
 -- entity vars
@@ -106,6 +128,9 @@ local entity_classes = {
         player = self,
         is_visible = true
       })
+      self.scarf = spawn_entity("scarf", self.x, self.y, {
+        player = self
+      })
     end,
     update = function(self)
       decrement_counter_prop(self, "showoff_frames_left")
@@ -124,7 +149,7 @@ local entity_classes = {
               local offset = ternary(incoming_snowball.has_updated_this_frame, 0, 1)
               local frames_alive = incoming_snowball.frames_alive + offset
               local frames_to_hit = incoming_snowball.frames_to_hit - offset
-              if frames_alive > 1 and frames_to_hit < 6 then
+              if frames_alive > 1 and frames_to_hit < 7 then
                 self.has_dodged = true
                 spawn_entity("dodge", self.x, self.y - 8, {
                   player = self
@@ -154,6 +179,10 @@ local entity_classes = {
           end
         end
       end
+      -- update scarf
+      local neck_x = self.x + self.facing * (neck_points[self.sprite][1] - 9)
+      local neck_y = self.y + neck_points[self.sprite][2] - 1
+      self.scarf:set_end_point(neck_x, neck_y)
     end,
     draw = function(self, x, y)
       -- colorize
@@ -172,6 +201,9 @@ local entity_classes = {
         sspr2(36, 72, 14, 20, x - ternary(self.is_first_player, 7, 6), y - 3, not self.is_first_player)
       else
         sspr2(17 * ((self.sprite - 1) % 7), 18 * flr((self.sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
+      end
+      if self.neck_x then
+        pset2(self.neck_x, self.neck_y, 9)
       end
     end,
     reset = function(self)
@@ -282,6 +314,60 @@ local entity_classes = {
           end
         end
       end
+    end
+  },
+  scarf = {
+    render_layer = 4,
+    init = function(self)
+      self.points = {}
+      local i
+      for i = 1, 7 do
+        add(self.points, {
+          x = self.x,
+          y = self.y,
+          vx = 0,
+          vy = 0
+        })
+      end
+    end,
+    update = function(self)
+      local i
+      -- apply physics
+      for i = 2, #self.points do
+        local point = self.points[i]
+        local prev_point = self.points[i - 1]
+        local dist, dx, dy = calc_distance(prev_point.x, prev_point.y, point.x, point.y)
+        if dist > 1 then
+          -- point.vx -= 0.01 * (dist - 5) * (dx / dist)
+          local force = min(3, dist - 1)
+          prev_point.vx += force * (dx / dist)
+          prev_point.vy += force * (dy / dist)
+          point.vx -= force * (dx / dist)
+          point.vy -= force * (dy / dist)
+        end
+        point.vx += wind_pressure / 10
+        point.vy += 0.05 - abs(wind_pressure) * wind_updraft / 20
+      end
+      -- apply velocity
+      for i = 2, #self.points do
+        local point = self.points[i]
+        point.vx *= 0.8
+        point.vy *= 0.8
+        point.x += point.vx
+        point.y += point.vy
+        point.y = min(point.y, 78)
+      end
+    end,
+    draw = function(self)
+      local i
+      for i = 1, #self.points do
+        local point = self.points[i]
+        rectfill2(point.x - 1, point.y - 1, 3, 3, self.player.color)
+      end
+    end,
+    set_end_point = function(self, x, y)
+      self.points[1].x = x
+      self.points[1].y = y
     end
   },
   snowball_pane = {
@@ -457,8 +543,10 @@ local entity_classes = {
   },
   wind_indicator = {
     render_layer = 13,
+    -- is_visible = false,
     draw = function(self, x, y)
-      local w = ceil(19 * abs(wind_pressure / 5))
+      local wind_level = abs(wind_pressure) / 5
+      local w = ceil(19 * wind_level)
       if w > 1 then
         pal(11, players[ternary(wind_pressure < 0, 2, 1)].color)
         sspr2(3 + (19 - w), 80, w, 5, x + ternary(wind_pressure < 0, 1 - w, 0), y, wind_pressure < 0)
@@ -604,6 +692,7 @@ local entity_classes = {
           self.animation = nil
           init_title()
         end
+        wind_is_active = false
       elseif self.animation == "opening" then
         self.amount_open += 1
         if self.amount_open >= 80 then
@@ -693,6 +782,7 @@ function _init()
   wind_active_frames = 0
   wind_switch_frames = 0
   wind_pressure = 0
+  wind_updraft = 0
   wind_target_pressure = 0
   -- spawn players
   players = {
@@ -746,6 +836,7 @@ function _init()
     start_round()
   end
   if skip_to_throw then
+    wind_active_frames = 100
     players[1].is_ready_to_throw = true
     players[1]:animate("aim")
     players[2].is_ready_to_throw = true
@@ -776,23 +867,27 @@ function _update()
   -- update the wind
   if wind_is_active then
     wind_active_frames = increment_counter(wind_active_frames)
-    wind_switch_frames = decrement_counter(wind_switch_frames)
-    local max_wind_pressure = mid(1, wind_active_frames / 110, 5)
-    if wind_switch_frames <= 0 then
-      wind_switch_frames = mid(0, 50 - flr(wind_active_frames / 10), 50) + rnd_int(40, 50)
-      local dir
-      if wind_target_pressure > 0 then
-        dir = -1
-      elseif wind_target_pressure < 0 then
-        dir = 1
-      else
-        dir = ternary(rnd() < 0.5, -1, 1)
+    if wind_active_frames > 100 then
+      wind_switch_frames = decrement_counter(wind_switch_frames)
+      local max_wind_pressure = mid(1, wind_active_frames / 100, 5)
+      if wind_switch_frames <= 0 then
+        wind_switch_frames = mid(0, 50 - flr(wind_active_frames / 10), 50) + rnd_int(40, 50)
+        local dir
+        if wind_target_pressure > 0 then
+          dir = -1
+        elseif wind_target_pressure < 0 then
+          dir = 1
+        else
+          dir = ternary(rnd() < 0.5, -1, 1)
+        end
+        wind_target_pressure = dir * max_wind_pressure * rnd_num(0.5, 1.0)
+        wind_updraft = rnd_num(-0.2, 1.0)
+      elseif wind_switch_frames % 5 == 0 then
+        wind_target_pressure += 2.0 * rnd() - 1.0
+        wind_updraft = rnd_num(-0.2, 1.0)
       end
-      wind_target_pressure = dir * max_wind_pressure * rnd_num(0.4, 1.0)
-    elseif wind_switch_frames % 5 == 0 then
-      wind_target_pressure += 2.0 * rnd() - 1.0
+      wind_target_pressure = mid(-max_wind_pressure, wind_target_pressure, max_wind_pressure)
     end
-    wind_target_pressure = mid(-max_wind_pressure, wind_target_pressure, max_wind_pressure)
   end
   local wind_change = (wind_target_pressure - wind_pressure) / 7
   local wind_change_dir = ternary(wind_change < 0, -1, 1)
@@ -990,13 +1085,14 @@ function start_round()
   wind_is_active = true
   wind_active_frames = 0
   wind_switch_frames = 0
+  wind_updraft = 0
   wind_target_pressure = 0
   players[1]:start_packing_snow()
   players[2]:start_packing_snow()
 end
 function end_round()
   scene = "round-end"
-  wind_is_active = false
+  wind_updraft = 0
   wind_target_pressure = 0
   -- figure out the winner
   local winner
@@ -1074,6 +1170,7 @@ function reset_round()
 end
 function init_title()
   scene = "title"
+  wind_is_active = false
   title.is_visible = true
   players[1]:reset()
   players[2]:reset()
