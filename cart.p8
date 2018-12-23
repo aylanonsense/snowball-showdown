@@ -137,6 +137,28 @@ local entity_classes = {
       -- apply animation
       self:apply_animation()
       local has_pressed_button = any_button_pressed(self.player_num, true)
+      if self.ready.is_npc then
+        if has_pressed_button then
+          self.ready.is_npc = false
+          sfx(4, self.channel)
+        else
+          local difficulty -- scale of 0.0 to 1.0
+          local point_diff = self.opponent.score.points - self.score.points
+          local most_points = max(self.opponent.score.points, self.score.points)
+          local difficulty = mid(0.0, most_points * 0.3 + point_diff * 0.3, 1.0)
+          if not self.pane.is_done then
+            has_pressed_button = rnd() < (0.13 + 0.26 * difficulty)
+          elseif self.is_ready_to_throw and not self.has_taken_action then
+            if not self.opponent.pane.is_done then
+              has_pressed_button = rnd() < 0.2
+            elseif self.opponent.has_taken_action then
+              has_pressed_button = rnd() < (0.03 + 0.055 * difficulty)
+            else
+              has_pressed_button = rnd() < (0.002 - 0.001 * difficulty) * (2 + speed_indicator.speed_level)
+            end
+          end
+        end
+      end
       if has_pressed_button then
         if scene == "title" then
           self.ready:activate()
@@ -205,8 +227,9 @@ local entity_classes = {
       else
         sspr2(17 * ((self.sprite - 1) % 7), 18 * flr((self.sprite - 1) / 7), 17, 18, x - 8, y, not self.is_first_player)
       end
-      if self.neck_x then
-        pset2(self.neck_x, self.neck_y, 9)
+      -- draw "npc"
+      if self.ready.is_npc then
+        print2_center("npc", self.x + ternary(self.is_first_player, 0, 3), self.y - 9, self.dark_color)
       end
     end,
     reset = function(self)
@@ -220,9 +243,9 @@ local entity_classes = {
     end,
     throw_snowball = function(self)
       sfx(4 + self.player_num, self.channel)
-      self:animate({ { 10, mid(1, 4 - flr(speed_indicator.speed_level / 4), 4) } }, function()
+      self:animate({ { 10, mid(1, 7 - flr(speed_indicator.speed_level / 3), 7) } }, function()
         -- snowball speed increases if the wind is in your favor
-        local speed = 88 / mid(1, 17 - speed_indicator.speed_level, 17)
+        local speed = 88 / mid(3, 17 - speed_indicator.speed_level, 17)
         -- throw snowball
         self:animate("throw")
         self.snowball = spawn_entity("snowball", self.x + 11 * self.facing, self.y + 5, {
@@ -231,8 +254,15 @@ local entity_classes = {
         })
       end)
     end,
-    get_hit = function(self)
-      sfx(7, self.channel)
+    get_hit = function(self, snowball_speed)
+      shake_and_freeze(3 + flr(snowball_speed / 2), 1 + flr(snowball_speed / 4))
+      if snowball_speed > 25 then
+        sfx(26, self.channel)
+      elseif snowball_speed > 9 then
+        sfx(27, self.channel)
+      else
+        sfx(28, self.channel)
+      end
       self.has_been_hit = true
       self.pane.is_visible = false
       self:animate("block")
@@ -510,7 +540,7 @@ local entity_classes = {
       self:apply_velocity()
       -- check for snowball hit
       if decrement_counter_prop(self, "frames_to_hit") and not self.player.opponent.has_dodged then
-        self.player.opponent:get_hit()
+        self.player.opponent:get_hit(abs(self.vx))
         self:die()
       end
     end,
@@ -536,30 +566,32 @@ local entity_classes = {
     end
   },
   win = {
-    frames_to_death = 130,
+    frames_to_death = 160,
     draw = function(self, x, y)
       draw_bubble_letters_with_shadow({ 11, 12, 7 }, x, y, self.player.color, self.player.dark_color)
     end
   },
   draw = {
-    frames_to_death = 130,
+    frames_to_death = 170,
     draw = function(self, x, y)
       draw_bubble_letters_with_shadow({ 3, 5, 6, 11 }, x, y, 13, 1)
     end
   },
   speed_indicator = {
     render_layer = 13,
-    -- is_visible = false,
     speed_level = 0,
     animation = nil,
     animation_frames = 0,
     update = function(self)
       if self.animation == "filling" and decrement_counter_prop(self, "animation_frames") then
         self.speed_level = min(15, self.speed_level + 1)
+        if self.speed_level % 2 == 0 then
+          sfx(19, -1, 4 * flr(self.speed_level / 2) - 4, 4)
+        end
         if self.speed_level >= 15 then
           self.animation = nil
         else
-          self.animation_frames = 25
+          self.animation_frames = 20 + 2 * self.speed_level
         end
       end
       if self.animation == "draining" and decrement_counter_prop(self, "animation_frames") then
@@ -595,10 +627,14 @@ local entity_classes = {
     points = 2,
     render_layer = 11,
     frames_to_point = 0,
+    skip_point_sound = false,
     update = function(self)
       if decrement_counter_prop(self, "frames_to_point") then
         self.points += 1
-        sfx(8, self.player.channel)
+        if not self.skip_point_sound then
+          sfx(8, self.player.channel)
+          self.skip_point_sound = false
+        end
       end
     end,
     draw = function(self, x, y)
@@ -613,8 +649,9 @@ local entity_classes = {
         sspr2(50, 72, 3, 20, x - 13 + 6 * i, y - 10)
       end
     end,
-    add_point = function(self, frames)
+    add_point = function(self, frames, skip_sound)
       self.frames_to_point = frames
+      self.skip_point_sound = skip_sound
     end,
     reset = function(self)
       self.points = 0
@@ -636,7 +673,7 @@ local entity_classes = {
     end,
     update = function(self)
       -- add new snowflakes
-      if rnd() < self.spawn_rate then
+      if rnd() < self.spawn_rate + speed_indicator.speed_level / 20 then
         self:spawn_snowflake()
       end
       -- update all snowflakes
@@ -699,6 +736,8 @@ local entity_classes = {
   },
   ready_up = {
     render_layer = 21,
+    npc_start_frames = 0,
+    is_npc = false,
     activate = function(self)
       self.is_ready = not self.is_ready
       sfx(ternary(self.is_ready, 4, 3), self.player.channel)
@@ -706,19 +745,39 @@ local entity_classes = {
         remove_title()
       end
     end,
+    update = function(self)
+      if self.player.opponent.ready.is_ready and not self.is_ready then
+        increment_counter_prop(self, "npc_start_frames")
+        if self.npc_start_frames >= 75 then
+          self:activate()
+          self.is_npc = true
+        end
+      else
+        self.npc_start_frames = 0
+      end
+    end,
     draw = function(self, x, y)
       print2_center("player " .. self.player.player_num, x, y, self.player.color)
       if self.is_ready then
         pal(11, self.player.color)
-        sspr2(79, 47, 34, 11, x - 17, y + 14)
-      elseif self.frames_alive % 35 < 25 then
-        print2_center("press", x, y + 14, 1)
-        print2_center("button", x, y + 20)
+        sspr2(79, ternary(self.is_npc, 58, 47), 34, 11, x - 17, y + 14)
+      else
+        if self.frames_alive % 35 < 25 then
+          print2_center("press", x, y + 14, 1)
+          print2_center("button", x, y + 20)
+        end
+        if self.npc_start_frames > 0 then
+          print2("npc", x - 19, y + 32, 1)
+          rect2(x - 6, y + 32, 25, 5)
+          rectfill2(x - 6, y + 32, mid(1, 25 * self.npc_start_frames / 75, 25), 5)
+        end
       end
     end,
     reset = function(self)
       self.is_visible = true
       self.is_ready = false
+      self.is_npc = false
+      self.npc_start_frames = 0
     end
   },
   title_blinders = {
@@ -752,6 +811,7 @@ local entity_classes = {
       self.visible_frames = 80
     end,
     close = function(self)
+      sfx(25)
       self.is_visible = true
       self.animation = "closing"
     end
@@ -771,7 +831,7 @@ local entity_classes = {
   },
   snow_poof = {
     render_layer = 7,
-    frames_to_death = 30,
+    frames_to_death = 60,
     num_snowflakes = 10,
     init = function(self)
       self.snowflakes = {}
@@ -846,6 +906,8 @@ function _init()
   }
   players[1].opponent = players[2]
   players[2].opponent = players[1]
+  -- wind indicator
+  speed_indicator = spawn_entity("speed_indicator", 62, 26)
   -- foreground snowfall
   spawn_entity("snowfall", 0, 0, {
     min_dist = 0.0,
@@ -867,8 +929,6 @@ function _init()
   -- black out anything that is offscreen
   spawn_entity("game_blinders")
   title_blinders = spawn_entity("title_blinders")
-  -- wind indicator
-  speed_indicator = spawn_entity("speed_indicator", 62, 26)
   -- debug, skip to start
   if skip_to_start or skip_to_throw then
     title.is_visible = false
@@ -914,9 +974,9 @@ function _update()
     wind_active_frames = 0
   end
   wind_switch_frames = decrement_counter(wind_switch_frames)
-  local max_wind_pressure = mid(0.5, wind_active_frames / 100, 5)
+  local max_wind_pressure = mid(0.5, wind_active_frames / 120, 1.5)
   if wind_switch_frames <= 0 then
-    wind_switch_frames = mid(0, 50 - flr(wind_active_frames / 10), 50) + rnd_int(40, 50)
+    wind_switch_frames = mid(0, 50 - flr(wind_active_frames / 10), 30) + rnd_int(135, 185)
     local dir
     if wind_target_pressure > 0 then
       dir = -1
@@ -925,10 +985,15 @@ function _update()
     else
       dir = ternary(rnd() < 0.5, -1, 1)
     end
-    wind_target_pressure = dir * max_wind_pressure * rnd_num(0.5, 1.0)
+    local wind_speed = max_wind_pressure * rnd_num(0.2, 1.0)
+    wind_target_pressure = dir * wind_speed
     wind_updraft = rnd_num(-0.2, 1.0)
-  elseif wind_switch_frames % 5 == 0 then
-    wind_target_pressure += 2.0 * rnd() - 1.0
+    if wind_speed > 1.45 then
+      sfx(rnd_int(21, 22))
+    elseif wind_speed > 0.5 then
+      sfx(rnd_int(20, 21))
+    end
+  elseif wind_switch_frames % 10 == 0 then
     wind_updraft = rnd_num(-0.2, 1.0)
   end
   wind_target_pressure = mid(-max_wind_pressure, wind_target_pressure, max_wind_pressure)
@@ -994,7 +1059,6 @@ function _draw()
   -- cover up the rightmost column of pixels
   pal()
   line(127, 0, 127, 127, 0)
-  print("entities: " .. #entities, 2, 2, 8)
 end
 
 -- spawns an instance of the given class
@@ -1109,6 +1173,7 @@ function remove_title()
   players[1].ready.visible_frames = 20
   players[2].ready.visible_frames = 20
   title_blinders:open()
+  sfx(16)
 end
 function start_bows()
   scene = "bows"
@@ -1129,7 +1194,6 @@ function start_round()
   scene = "game"
   wind_is_active = true
   wind_active_frames = 0
-  wind_switch_frames = 0
   wind_updraft = 0
   wind_target_pressure = 0
   players[1]:start_packing_snow()
@@ -1153,9 +1217,9 @@ function end_round()
       players[1].score.hidden_frames = 20
       players[2].score.hidden_frames = 20
       local is_final_point = (winner.score.points >= 2)
-      winner.score:add_point(45)
+      winner.score:add_point(45, is_final_point)
       sfx(9, winner.channel)
-      winner:animate({ "celebrate", { -1, 60 } }, function()
+      winner:animate({ "celebrate", { -1, 45 } }, function()
         if is_final_point then
           declare_winner(winner)
         else
@@ -1179,11 +1243,9 @@ function end_round()
         if is_final_point[1] and is_final_point[2] then
           declare_draw()
         elseif is_final_point[1] then
-          sfx(9, players[1].channel)
           players[1]:animate("celebrate")
           declare_winner(players[1])
         elseif is_final_point[2] then
-          sfx(9, players[2].channel)
           players[2]:animate("celebrate")
           declare_winner(players[2])
         else
@@ -1194,10 +1256,11 @@ function end_round()
   end
 end
 function declare_winner(winner)
+  music(0)
   spawn_entity("win", winner.x - 15, winner.y - 18, {
     player = winner
   })
-  winner.opponent:animate({ "drop", { -1, 30 } }, function()
+  winner.opponent:animate({ "drop", { -1, 60 } }, function()
     title_blinders:close()
     winner.opponent:animate({ { -1, 100 } }, function()
       winner:animate("stop_celebrating")
@@ -1206,9 +1269,10 @@ function declare_winner(winner)
   end)
 end
 function declare_draw()
+  music(4)
   spawn_entity("draw", 39, 51)
-  players[1]:animate({ "drop", { -1, 130 }, "get_up" })
-  players[2]:animate({ "drop", { -1, 30 } }, function()
+  players[1]:animate({ "drop", { -1, 170 }, "get_up" })
+  players[2]:animate({ "drop", { -1, 70 } }, function()
     title_blinders:close()
     players[2]:animate({ { -1, 100 }, "get_up" })
   end)
@@ -1332,6 +1396,9 @@ end
 function sspr2(sx, sy, sw, sh, x, y, flip_h, flip_y, sw2, sh2)
   sspr(sx, sy, sw, sh, x + 0.5, y + 0.5, sw2 or sw, sh2 or sh, flip_h, flip_y)
 end
+function rect2(x, y, width, height, ...)
+  rect(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5, ...)
+end
 function rectfill2(x, y, width, height, ...)
   rectfill(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5, ...)
 end
@@ -1395,17 +1462,17 @@ b66677777777b0b667777777b000b6677777b001ddd1001dd11ddd101ddd11ddddd1ddddd11ddd1b
 b66767777777b0b666777777b000b6767777b001ddd111ddd11ddd101ddd11dddd101dddd11ddd1bb000b0bbbbbb0bb000b0bbbbb0000bb00222222222222222
 b66677777777b0b667677777b000b6677777b001dddddddd101ddd101ddd101dd10001dd101ddd10000000000000000000000000000000000222222222222222
 b6667777777b000b6677777b00000b66777b0001111111110011111011111001100000110011111bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb222222222222222
-0b666777777b000b6667777b000000b666b000022222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-0b6666777bb00000b6666bb00000000bbb0000022222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-00bbb666b00000000bbbb00000000000000000022222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-00000bbb000000000000000000000000000000022222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
-22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222
+0b666777777b000b6667777b000000b666b00002222222222222222222222222222222222222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb222222222222222
+0b6666777bb00000b6666bb00000000bbb0000022222222222222222222222222222222222222220000000000000000000000000000000000222222222222222
+00bbb666b00000000bbbb00000000000000000022222222222222222222222222222222222222220000000bb000b0bbbbb000bbbb00000000222222222222222
+00000bbb000000000000000000000000000000022222222222222222222222222222222222222220000000bbb00b0bb000b0bb000b0000000222222222222222
+22222222222222222222222222222222222222222222222222222222222222222222222222222220000000bbb00b0bb000b0bb00000000000222222222222222
+22222222222222222222222222222222222222222222222222222222222222222222222222222220000000bb0b0b0bbbbb00bb00000000000222222222222222
+22222222222222222222222222222222222222222222222222222222222222222222222222222220000000bb0b0b0bb00000bb00000000000222222222222222
+22222222222222222222222222222222222222222222222222222222222222222222222222222220000000bb00bb0bb00000bb000b0000000222222222222222
+22222222222222222222222222222222222222222222222222222222222222222222222222222220000000bb00bb0bb000000bbbb00000000222222222222222
+22222222222222222222222222222222222222222222222222222222222222222222222222222220000000000000000000000000000000000222222222222222
+2222222222222222222222222222222222222222222222222222222222222222222222222222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb222222222222222
 2222222222222222222222222222222222222222222222222222200d000000002222222222222222222222222222222222222222222222222222222222222222
 2222222222222222222222222222222222222222222222222222200dd00000002222222222222222222222222222222222222222222222222222222222222222
 222222222222222222222222222222222222222222222222222220ddd000000044dddddddddddddddddddddddddddd2444444444444444444444444444444444
@@ -1473,7 +1540,7 @@ __sfx__
 0003000018135191351c1452014500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105001050010500105
 0001000018010120100e0100c0100b0100a0100a0100a010090100901009010090100a0100b0100c0100d0100f0101001012010140101501017010190101c0101f01022010260102a0102e01032010370103d010
 0001000016010110100d0100b0100a0100901009010090100801008010080100801008010090100a0100b0100c0100d0100f010100101201014010170101a0101d0102001024010280102c01030010350103b010
-000200002a61225632216321e6321962215622106220e6220a622096120861207612221221912213122101220f1220d1220c1220a122091220811208112121120c11209112051120311202112011120111201112
+010200002a61225632216321e6321962215622106220e6220a622096120861207612221221912213122101220f1220d1220c1220a122091220811208112121120c11209112051120311202112011120111201112
 010700001855018541185311852118511185111850100500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000000
 000400001d0101d01121021270212c021300313002130021300113001130021300113001130021300113000130001300013000130001300013000130001300013000130001300013000130001300010000000000
 010200002475024741247412473124731247312473124731247212472124721247212472124721247112471124711247112471124711247112471124711247112470111701007010070100701007010070100701
@@ -1481,5 +1548,24 @@ __sfx__
 010400001870000700007000000000000187100000000000000000000000000000000000018710000000000000000000000000003710037110371103711047110671107721097210c7210e71113711187111c701
 010200000b5130b5130c5130e52313523195231251312523135231553319533205331b5231b5231d5332153328541215212153122531265412a54126531285312a5312d541305413053130511305030050300503
 00080000056100a621086210361101601086100c62109621036110360100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601
-010a00000000000700007000070000000000000000000700000001871000700007000000000700187100000000000000000000000000000000000000000000000000018710000000000000000000001871000000
-011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000a00000000000700007000070000000000000000000700000001871000700007000000000700187100000000000000000000000000000000000000000000000000018710000000000000000000001871000000
+010500000170001701017010170101701017110171101711017110171101711017110171101711027110271102721027210372103721037210472104721047210572105721077210772109721097310b7310d731
+011400002174021721247402d7402d721247402b7402b7412874026740267212474028740007002b7400070000700307503073130721307010070000700007000070000700007000070000700007000070000700
+011600002133021311243302833028311243302733027331263302433024311213301f3321f312000001b3321b312000000000000300183121832218312183121830100300003000030000300003000030000300
+01100000181100010000100001001a1100010000100001001c1200010000100001001d1220010000100001001f2321f2120010000100212422123221212212022325221232232222122223202001000010000100
+010c00000060100611016110061100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100000
+011000000060100611016210162101621006110060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601
+011200000060100611016210261104631036210061100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601
+01140000006010061103621066110962107631096410b631066210061100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601006010060100601
+001000000060100611076210e611106210d6310964113651196311b64115631136410b63107621006110060100601006010060100601006010060100601006010060100601006010060100601006010060100601
+010d00000970009711087110771107711077110671105711057110571104711047110472103721037210272102721027210272102721027210173101731017510000000000000000000000000000000000000000
+00040000376522c642236521964215652116320d6220c6220b6220b6220a6120a6122c142251321d13218132151222213219132121220e1220c1120a1121a132131320c12208122061120e122091220511202112
+00030000326422a6321f6421b63214632106220e6220b62209622076120761207612281321e13216132121220f1220e1121c132161320e1220a12207122061120511205112111220a12206122041120111201112
+000200002a63225632216321e6221962215622106220e6220a622096120861207612221221912213122101220f1220d1220c1220a122091220811208112121120c11209112051120311202112011120111201112
+__music__
+04 51424311
+00 41424344
+00 41424344
+00 41424344
+04 52424312
+
