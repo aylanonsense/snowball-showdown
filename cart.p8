@@ -13,7 +13,7 @@ render layers:
   10: game_blinders
   11: score
   12: snowball_pane
-  13: wind_indicator
+  13: speed_indicator
   ...
   18: snow_poof (pane)
   19: start
@@ -43,7 +43,6 @@ local player_animations = {
   celebrate = { 17 },
   stop_celebrating = { { 18, 5 }, 1},
   aim = { { 8, 12 }, 9 },
-  throw_start = { { 10, 3 } },
   throw = { 14 },
   dodge = { { 11, 17 } },
   block = { 12 },
@@ -101,6 +100,7 @@ local entities
 local players
 local title
 local start
+local speed_indicator
 local title_blinders
 local entity_classes = {
   player = {
@@ -149,7 +149,7 @@ local entity_classes = {
               local offset = ternary(incoming_snowball.has_updated_this_frame, 0, 1)
               local frames_alive = incoming_snowball.frames_alive + offset
               local frames_to_hit = incoming_snowball.frames_to_hit - offset
-              if frames_alive > 1 and frames_to_hit < 7 then
+              if frames_alive > 1 and frames_to_hit < 10 then
                 self.has_dodged = true
                 sfx(13, self.channel)
                 spawn_entity("dodge", self.x, self.y - 8, {
@@ -173,6 +173,7 @@ local entity_classes = {
                 self.showoff_frames_left = 48
               end
               sfx(11, self.channel)
+              speed_indicator:fill()
               self:animate({ "show_snowball", { -1, self.showoff_frames_left - 9 }, "aim" }, function()
                 self.pane.is_visible = false
                 self.is_ready_to_throw = true
@@ -219,12 +220,9 @@ local entity_classes = {
     end,
     throw_snowball = function(self)
       sfx(4 + self.player_num, self.channel)
-      self:animate("throw_start", function()
+      self:animate({ { 10, mid(1, 4 - flr(speed_indicator.speed_level / 4), 4) } }, function()
         -- snowball speed increases if the wind is in your favor
-        local speed = 4
-        if (wind_pressure > 0) == self.is_first_player then
-          speed += 14.5 * abs(wind_pressure) / 5
-        end
+        local speed = 88 / mid(1, 17 - speed_indicator.speed_level, 17)
         -- throw snowball
         self:animate("throw")
         self.snowball = spawn_entity("snowball", self.x + 11 * self.facing, self.y + 5, {
@@ -241,6 +239,7 @@ local entity_classes = {
       spawn_entity("snow_poof", self.x, self.y, {
         num_snowflakes = 25
       })
+      speed_indicator:drain()
       local opponent = self.opponent
       if not self.has_taken_action or opponent.has_been_hit or opponent.has_dodged then
         end_round()
@@ -548,15 +547,47 @@ local entity_classes = {
       draw_bubble_letters_with_shadow({ 3, 5, 6, 11 }, x, y, 13, 1)
     end
   },
-  wind_indicator = {
+  speed_indicator = {
     render_layer = 13,
     -- is_visible = false,
+    speed_level = 0,
+    animation = nil,
+    animation_frames = 0,
+    update = function(self)
+      if self.animation == "filling" and decrement_counter_prop(self, "animation_frames") then
+        self.speed_level = min(15, self.speed_level + 1)
+        if self.speed_level >= 15 then
+          self.animation = nil
+        else
+          self.animation_frames = 25
+        end
+      end
+      if self.animation == "draining" and decrement_counter_prop(self, "animation_frames") then
+        self.speed_level = max(0, self.speed_level - 1)
+        if self.speed_level == 0 then
+          self.animation = nil
+        else
+          self.animation_frames = 5
+        end
+      end
+    end,
     draw = function(self, x, y)
-      local wind_level = abs(wind_pressure) / 5
-      local w = ceil(19 * wind_level)
-      if w > 1 then
-        pal(11, players[ternary(wind_pressure < 0, 2, 1)].color)
-        sspr2(3 + (19 - w), 80, w, 5, x + ternary(wind_pressure < 0, 1 - w, 0), y, wind_pressure < 0)
+      pal(11, 7)
+      local i
+      for i = 1, flr(self.speed_level / 2) do
+        sspr2(1, 88, 5, 3, x - 2, y + 4 - 4 * i, false, true)
+      end
+    end,
+    fill = function(self)
+      if self.animation != "filling" then
+        self.animation = "filling"
+        self.animation_frames = 60
+      end
+    end,
+    drain = function(self)
+      if self.animation != "draining" then
+        self.animation = "draining"
+        self.animation_frames = 1
       end
     end
   },
@@ -740,7 +771,7 @@ local entity_classes = {
   },
   snow_poof = {
     render_layer = 7,
-    frames_to_death = 0,
+    frames_to_death = 30,
     num_snowflakes = 10,
     init = function(self)
       self.snowflakes = {}
@@ -837,7 +868,7 @@ function _init()
   spawn_entity("game_blinders")
   title_blinders = spawn_entity("title_blinders")
   -- wind indicator
-  spawn_entity("wind_indicator", 62, 26)
+  speed_indicator = spawn_entity("speed_indicator", 62, 26)
   -- debug, skip to start
   if skip_to_start or skip_to_throw then
     title.is_visible = false
@@ -879,30 +910,28 @@ function _update()
   -- update the wind
   if wind_is_active then
     wind_active_frames = increment_counter(wind_active_frames)
-    if wind_active_frames > 100 then
-      wind_switch_frames = decrement_counter(wind_switch_frames)
-      local max_wind_pressure = mid(1, wind_active_frames / 100, 5)
-      if wind_switch_frames <= 0 then
-        wind_switch_frames = mid(0, 50 - flr(wind_active_frames / 10), 50) + rnd_int(40, 50)
-        local dir
-        if wind_target_pressure > 0 then
-          dir = -1
-        elseif wind_target_pressure < 0 then
-          dir = 1
-        else
-          dir = ternary(rnd() < 0.5, -1, 1)
-        end
-        wind_target_pressure = dir * max_wind_pressure * rnd_num(0.5, 1.0)
-        wind_updraft = rnd_num(-0.2, 1.0)
-      elseif wind_switch_frames % 5 == 0 then
-        wind_target_pressure += 2.0 * rnd() - 1.0
-        wind_updraft = rnd_num(-0.2, 1.0)
-      end
-      wind_target_pressure = mid(-max_wind_pressure, wind_target_pressure, max_wind_pressure)
-    end
   else
-    wind_target_pressure = 0
+    wind_active_frames = 0
   end
+  wind_switch_frames = decrement_counter(wind_switch_frames)
+  local max_wind_pressure = mid(0.5, wind_active_frames / 100, 5)
+  if wind_switch_frames <= 0 then
+    wind_switch_frames = mid(0, 50 - flr(wind_active_frames / 10), 50) + rnd_int(40, 50)
+    local dir
+    if wind_target_pressure > 0 then
+      dir = -1
+    elseif wind_target_pressure < 0 then
+      dir = 1
+    else
+      dir = ternary(rnd() < 0.5, -1, 1)
+    end
+    wind_target_pressure = dir * max_wind_pressure * rnd_num(0.5, 1.0)
+    wind_updraft = rnd_num(-0.2, 1.0)
+  elseif wind_switch_frames % 5 == 0 then
+    wind_target_pressure += 2.0 * rnd() - 1.0
+    wind_updraft = rnd_num(-0.2, 1.0)
+  end
+  wind_target_pressure = mid(-max_wind_pressure, wind_target_pressure, max_wind_pressure)
   local wind_change = (wind_target_pressure - wind_pressure) / 7
   local wind_change_dir = ternary(wind_change < 0, -1, 1)
   wind_change = min(abs(wind_change), 0.3)
@@ -965,6 +994,7 @@ function _draw()
   -- cover up the rightmost column of pixels
   pal()
   line(127, 0, 127, 127, 0)
+  print("entities: " .. #entities, 2, 2, 8)
 end
 
 -- spawns an instance of the given class
