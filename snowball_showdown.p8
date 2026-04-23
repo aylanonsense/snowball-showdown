@@ -2,7 +2,7 @@ pico-8 cartridge // http://www.pico-8.com
 version 16
 __lua__
 -- snowball showdown
--- by bridgs @bridgs_dev
+-- by bridgs
 
 daynumber="23"
 ::_::
